@@ -1,0 +1,17 @@
+services:
+  forex-agent:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      FOREX_API_TOKEN: ${FOREX_API_TOKEN:?Set FOREX_API_TOKEN with at least 32 random characters}
+    volumes:
+      - journal:/app/data
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  journal:

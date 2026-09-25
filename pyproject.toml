@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "forex-ai-agent"
+version = "0.1.0"
+description = "Asisten analisis forex dengan kontrol risiko deterministik dan AI opsional"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = []
+
+[project.scripts]
+forex-agent = "forex_agent.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["forex_agent*"]
+
+[tool.setuptools.package-data]
+forex_agent = ["prompts/*.md"]
