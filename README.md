@@ -44,6 +44,31 @@ bukan harga pasar saat ini. Tidak ada pengiriman order ke broker.
 `APPROVED_RISK` menilai aturan risiko; pengguna tetap perlu menilai kelayakan arah
 dan setup. `NO_TRADE` mengosongkan level entry, stop, target, dan RR.
 
+## Riset paper: backtest dan baseline ML
+
+Jalur riset terpisah dari `analyze`/`risk`/jurnal akun. Dataset contoh di bawah
+**sepenuhnya sintetis**; hasilnya tidak mengukur potensi profit di pasar.
+
+```bash
+python -m forex_agent backtest --data examples/backtest.synthetic.json --out data/backtest-result.json
+python -m forex_agent train --data examples/backtest.synthetic.json --pair EUR/USD --timeframe M5 --out data/model.synthetic.json
+python -m forex_agent predict --model data/model.synthetic.json --data examples/backtest.synthetic.json
+```
+
+Backtest memvalidasi candle seluruh simbol sebelum replay, memproses sinyal pada
+penutupan dan fill pada open berikutnya, mendahulukan stop jika stop serta target
+terjangkau pada candle yang sama, dan menghentikan order baru setelah batas
+drawdown. Output lengkap berisi event, transaksi, dan ekuitas mark-to-market.
+`train` memakai fitur kausal, split menurut waktu dengan purge batas label,
+normalisasi pada training saja, dan test yang tidak digunakan untuk memilih
+ambang. Skor model belum dikalibrasi sebagai peluang menang. Format dataset,
+asumsi, batas, audit, benchmark dan roadmap ada di
+[PLATFORM_ROADMAP.md](docs/PLATFORM_ROADMAP.md).
+
+Order paper tersimpan dalam ledger SQLite terpisah dengan idempotensi `client_id`
+dan `execution_id`, fill parsial, dan reservasi risiko. Jalur ini tidak
+mengirim order ke broker; OANDA pada aplikasi lama tetap baca saja.
+
 ## Instalasi opsional
 
 Perintah `python -m forex_agent` berjalan langsung dari folder. Untuk command `forex-agent`:

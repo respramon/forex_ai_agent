@@ -32,8 +32,10 @@ pasar forex global; engine tidak memakai volume untuk mengklaim tekanan institus
 
 Mode nyata memakai jam komputer UTC, bukan `as_of` sebagai waktu kebenaran. Simulasi
 menggunakan `as_of` tetap agar reproduktif; data harus tersedia pada waktu itu.
-Jika membuat backtest sendiri, potong tiap frame pada waktu simulasi sebelum
-memanggil agent. Tidak ada mesin backtest multi-bar/performance dalam rilis ini.
+Jalur analisis tetap menilai satu snapshot. Replay multi-bar terpisah menggunakan
+kontrak input dan asumsi di [PLATFORM_ROADMAP.md](PLATFORM_ROADMAP.md). Jika
+memanggil agent dalam backtest kustom, potong tiap frame pada waktu simulasi
+sebelum memanggilnya.
 
 Frame terbaru dibatasi usia 1,25× durasi + 60 detik; candle pemicu sinyal harus masih
 dalam satu durasi timeframe. Celah terbaru > 1,5× durasi ditolak kecuali pola penutupan

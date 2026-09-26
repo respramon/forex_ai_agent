@@ -6,11 +6,13 @@ from pathlib import Path
 import sys
 from .agent import ForexAgent, format_report
 from .api import serve
+from .backtest import Backtest
 from .demo import make_snapshot
 from .journal import Journal
 from .llm import explain
 from .models import PAIRS, RiskPolicy, SECONDS, ValidationError, utc
 from .providers import OandaProvider, alpha_vantage_sentiment, csv_snapshot, read_json
+from .research import predict, train
 
 
 def write_json(path, value):
@@ -70,6 +72,18 @@ def parser():
     close.add_argument("--net-pnl", required=True, type=float)
     close.add_argument("--closed-at", required=True)
     sub.add_parser("summary").add_argument("--simulated", action="store_true")
+    cmd = commands.add_parser("backtest", help="Replay paper atas candle historis yang lengkap.")
+    cmd.add_argument("--data", required=True)
+    cmd.add_argument("--policy")
+    cmd.add_argument("--out")
+    cmd = commands.add_parser("train", help="Latih baseline logistic dengan split kronologis.")
+    cmd.add_argument("--data", required=True)
+    cmd.add_argument("--pair", choices=PAIRS, required=True)
+    cmd.add_argument("--timeframe", choices=SECONDS, required=True)
+    cmd.add_argument("--out", required=True)
+    cmd = commands.add_parser("predict", help="Skor satu candle dengan model riset yang disimpan.")
+    cmd.add_argument("--model", required=True)
+    cmd.add_argument("--data", required=True)
     return root
 
 
@@ -120,6 +134,23 @@ def main(argv=None):
                 else:
                     result = journal.summary(args.simulated)
                 print(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False))
+        elif command == "backtest":
+            result = Backtest(read_json(args.data), policy=policy).run()
+            if args.out:
+                write_json(args.out, result)
+            print(json.dumps({k: v for k, v in result.items() if k not in ("events", "equity_curve")},
+                             indent=2, ensure_ascii=False, allow_nan=False))
+        elif command == "train":
+            data = read_json(args.data)
+            raw = data["bars"][args.pair] if isinstance(data, dict) else data
+            result = train(raw, pair=args.pair, timeframe=args.timeframe)
+            write_json(args.out, result)
+            print(json.dumps({"model": args.out, "validation": result["validation"],
+                              "test": result["test"]}, indent=2, ensure_ascii=False))
+        elif command == "predict":
+            model, data = read_json(args.model), read_json(args.data)
+            raw = data["bars"][model["pair"]] if isinstance(data, dict) else data
+            print(json.dumps(predict(model, raw), indent=2, ensure_ascii=False))
         return 0
     except (ValidationError, OSError, KeyError, ValueError, TypeError) as exc:
         print(json.dumps({"status": "ERROR", "error": str(exc)}, ensure_ascii=False), file=sys.stderr)

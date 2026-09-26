@@ -68,7 +68,16 @@ menyimpan P/L aktual secara manual dan menghasilkan metrik dari trade tertutup.
 
 SQLite memakai WAL dan `BEGIN IMMEDIATE` pada penerbitan sinyal. Cooldown dan kuota
 bersifat global per database akun, lintas pair. Simulasi dan data nyata dipisahkan.
-Sinyal yang belum dieksekusi tidak otomatis menjadi posisi atau reservasi margin.
+Sinyal dari mode analisis yang belum dieksekusi tidak otomatis menjadi posisi atau reservasi margin.
 Sebelum mengeksekusi lebih dari satu ide, masukkan posisi aktual dan refresh snapshot.
 Paket ini belum menyediakan rekonsiliasi broker per tiket, multi-tenant auth, atau
 mesin antrean terdistribusi. Gunakan satu database konsisten untuk setiap akun.
+
+## Jalur riset paper terpisah
+
+`backtest.py` memproses OHLC lengkap per simbol dalam urutan waktu tetap dan
+`orderbook.py` menyimpan order/fill **paper** serta reservasi risiko. Jalur ini
+tidak mengubah kontrak analisis `ForexAgent` atau jurnal manual. `research.py`
+melatih model baseline di data historis dengan split kronologis; skornya tidak
+dipakai untuk mengirim order. Detail dan rencana migrasi ada di
+[PLATFORM_ROADMAP.md](PLATFORM_ROADMAP.md).
