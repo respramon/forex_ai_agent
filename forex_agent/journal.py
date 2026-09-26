@@ -8,7 +8,8 @@ import uuid
 from datetime import datetime, timedelta, timezone as fixed_timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from .models import RiskPolicy, ValidationError, iso, number, pair_name, utc
+from .models import (RiskPolicy, ValidationError, iso, number, pair_name,
+                     utc, validate_trade_levels)
 
 
 class Journal:
@@ -59,11 +60,7 @@ class Journal:
 
     def open_trade(self, raw: dict) -> str:
         pair, side = pair_name(raw["pair"]), raw["side"]
-        if side not in ("BUY", "SELL"):
-            raise ValidationError("Arah jurnal harus BUY/SELL.")
-        entry, stop, target = [number(raw[k], k, positive=True) for k in ("entry", "stop", "target")]
-        if not (stop < entry < target if side == "BUY" else target < entry < stop):
-            raise ValidationError("Level transaksi jurnal tidak valid.")
+        entry, stop, target = validate_trade_levels(side, raw["entry"], raw["stop"], raw["target"])
         simulated = raw.get("simulated", False)
         if not isinstance(simulated, bool):
             raise ValidationError("simulated harus boolean.")
@@ -111,11 +108,7 @@ class Journal:
             row = self.db.execute("SELECT * FROM trades WHERE id=?", (trade_id,)).fetchone()
             if row is None or row["simulated"] or row["closed_at"] is not None:
                 raise ValidationError("Hanya transaksi nyata yang terbuka dapat diperbarui.")
-            valid_levels = (values["target"] > values["entry"] and values["stop"] < values["target"]
-                            if row["side"] == "BUY" else
-                            values["target"] < values["entry"] and values["stop"] > values["target"])
-            if not valid_levels:
-                raise ValidationError("SL dan TP tidak sesuai arah transaksi.")
+            validate_trade_levels(row["side"], values["entry"], values["stop"], values["target"])
             minimum = row["initial_risk"] * max(1, values["units"] / row["units"])
             if values["initial_risk"] + 1e-8 < minimum:
                 raise ValidationError("initial_risk tidak boleh turun atau lebih kecil setelah units bertambah.")

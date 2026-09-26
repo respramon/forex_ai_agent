@@ -116,6 +116,53 @@ class BacktestTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "spread"):
             Backtest(variable)
 
+    def test_all_open_gap_exits_precede_pending_fills_regardless_of_pair_order(self):
+        class GapExitAndPending:
+            def on_close(self, pair, history):
+                if pair == "GBP/USD" and len(history) == 15:
+                    return "BUY"
+                if pair == "EUR/USD" and len(history) == 16:
+                    return "BUY"
+                return None
+
+        def run(pairs):
+            data = dataset(pairs=pairs)
+            data["bars"]["GBP/USD"][16].update(
+                open=1.098, high=1.1001, low=1.097, close=1.098)
+            return Backtest(data, strategy=GapExitAndPending(),
+                            policy=RiskPolicy(cooldown_minutes=1)).run()
+
+        forward = run(("EUR/USD", "GBP/USD"))
+        reverse = run(("GBP/USD", "EUR/USD"))
+        for result in (forward, reverse):
+            same_time = [event for event in result["events"]
+                         if event["time"] == "2026-01-05T01:20:00Z" and event["phase"] == 2]
+            self.assertEqual([(event["pair"], event["kind"]) for event in same_time],
+                             [("GBP/USD", "exit"), ("EUR/USD", "fill")])
+            self.assertEqual(result["open_positions"], ["EUR/USD"])
+        self.assertEqual(forward["trades"], reverse["trades"])
+        self.assertEqual(forward["equity_curve"], reverse["equity_curve"])
+
+    def test_stop_trigger_uses_side_aware_quote_from_midpoint_ohlc(self):
+        for side, updates in (
+            ("BUY", {"low": 1.09971, "high": 1.1001}),
+            ("SELL", {"low": 1.0999, "high": 1.10029}),
+        ):
+            class SingleSignal:
+                def on_close(self, pair, history):
+                    return side if len(history) == 15 else None
+
+            data = dataset()
+            data["bars"]["EUR/USD"][15].update(**updates)
+            result = Backtest(data, strategy=SingleSignal()).run()
+            self.assertEqual(result["trades"][0]["reason"], "stop")
+
+    def test_metrics_report_realized_and_unrealized_pnl(self):
+        result = Backtest(dataset(), strategy=TrackingStrategy()).run()
+        self.assertAlmostEqual(result["metrics"]["realized_pnl"], 0)
+        self.assertAlmostEqual(result["metrics"]["unrealized_pnl"],
+                               result["final_equity"] - result["initial_equity"])
+
 
 if __name__ == "__main__":
     unittest.main()

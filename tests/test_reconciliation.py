@@ -54,6 +54,16 @@ class ReconciliationTests(unittest.TestCase):
                 with self.assertRaises(ValidationError):
                     journal.link_broker_trade("old", "broker-8")
 
+    def test_broker_levels_must_follow_trade_direction(self):
+        position = {"id": "broker-7", "pair": "EUR/USD", "side": "BUY",
+                    "units": 10000, "entry": 1.10, "stop": 1.09,
+                    "target": 1.12, "loss_factor": 1}
+        journal = [{"broker_trade_id": "broker-7", "pair": "EUR/USD", "side": "BUY",
+                    "units": 10000, "entry": 1.10, "stop": 1.09,
+                    "target": 1.12, "initial_risk": 110}]
+        with self.assertRaises(ValidationError):
+            reconcile_positions([{**position, "stop": 1.11}], journal, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,7 @@ kecil; paket ini belum mencakup hardening layanan publik.
 | Method dan path | Input | Output |
 |---|---|---|
 | GET `/health` | Tanpa auth | status dan execution_enabled=false |
+| GET `/ready` | Tanpa auth | pemeriksaan database dan status kesiapan |
 | POST `/v1/analyze` | snapshot, timeframe, mode analyst/signal | Laporan resmi |
 | POST `/v1/risk` | snapshot, timeframe, proposed_trade | Laporan risiko |
 | POST `/v1/journal/open` | Record trade (lihat examples/journal_trade.json) | trade_id |
@@ -21,7 +22,12 @@ Semua request POST memakai `Content-Type: application/json`. Batas body 4 MiB,
 60 request/menit/IP, timeout koneksi 15 detik. Tidak ada CORS terbuka. HTTP 400 untuk
 body/input tidak valid, 401 tanpa token, 404 endpoint tidak dikenal, 413 body melebihi
 batas, 415 tipe body tidak sesuai, 429 kuota. Keputusan NO_TRADE/REJECTED memakai HTTP
-200 karena merupakan hasil bisnis yang valid, bukan kegagalan HTTP.
+200 karena merupakan hasil bisnis yang valid, bukan kegagalan HTTP. Parameter query
+`simulated` harus tepat satu nilai `true` atau `false`.
+
+Untuk `POST /v1/journal/open`, kirim `Idempotency-Key` atau field JSON `client_id`.
+Pengulangan dengan key dan payload yang sama mengembalikan trade yang sama; payload
+berbeda dengan key yang sudah dipakai menghasilkan HTTP 409.
 
 ## Contoh request Python tanpa dependency
 

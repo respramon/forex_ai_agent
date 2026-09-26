@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 
-from .models import ValidationError, number, pair_name
+from .models import ValidationError, number, pair_name, validate_trade_levels
 
 
 def reconcile_positions(broker_trades, journal_trades: list[dict], open_count: int) -> list[str]:
@@ -19,19 +19,26 @@ def reconcile_positions(broker_trades, journal_trades: list[dict], open_count: i
         ticket = raw.get("id")
         if not isinstance(ticket, str) or not ticket or ticket in tickets:
             raise ValidationError("ID tiket broker hilang atau duplikat.")
-        if raw.get("side") not in ("BUY", "SELL"):
+        side = raw.get("side")
+        if side not in ("BUY", "SELL"):
             raise ValidationError("Arah tiket broker tidak valid.")
-        pair_name(raw["pair"])
+        pair = pair_name(raw["pair"])
         if any(raw.get(field) is None for field in ("stop", "target", "loss_factor")):
             return [f"Tiket {ticket}: SL, TP, atau konversi belum tersedia; risiko tidak dapat diverifikasi."]
         for field in ("units", "entry", "stop", "target", "loss_factor"):
             number(raw[field], field, positive=True)
-        tickets[ticket] = raw
+        validate_trade_levels(side, raw["entry"], raw["stop"], raw["target"])
+        normalized = dict(raw)
+        normalized["pair"], normalized["side"] = pair, side
+        tickets[ticket] = normalized
     journal_ids = [row["broker_trade_id"] for row in journal_trades]
     if any(not value for value in journal_ids) or set(journal_ids) != set(tickets):
         return ["ID tiket broker tidak cocok dengan jurnal; tautkan dan periksa tiap transaksi."]
     reasons = []
     for row in journal_trades:
+        # Journal rows are normally produced by Journal.open_trade/amend, but
+        # validate again at this boundary so imported legacy rows fail closed.
+        validate_trade_levels(row["side"], row["entry"], row["stop"], row["target"])
         trade = tickets[row["broker_trade_id"]]
         ticket = trade["id"]
         if trade["pair"] != row["pair"] or trade["side"] != row["side"]:

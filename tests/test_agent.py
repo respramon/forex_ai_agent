@@ -78,6 +78,22 @@ class AgentTests(unittest.TestCase):
                 self.data["frames"]["M15"][-1]["close"] = float("nan")
             self.assert_blocked(self.signal())
 
+    def test_cadence_gap_anywhere_in_history_is_rejected(self):
+        self.data["frames"]["M15"].pop(10)
+        self.assert_blocked(self.signal())
+
+    def test_snapshot_cutoff_rejects_context_after_as_of(self):
+        self.data["frames"]["H1"][-1]["time"] = iso(utc(self.data["as_of"]) + timedelta(hours=1))
+        self.assert_blocked(self.signal())
+
+    def test_common_cutoff_rejects_account_after_snapshot(self):
+        self.data["simulated"] = False
+        cutoff = utc(self.data["as_of"])
+        self.data["account"]["as_of"] = iso(cutoff + timedelta(seconds=30))
+        self.data["broker_open_trades"] = []
+        report = self.agent.analyze(self.data, "M15", "signal", clock=cutoff + timedelta(minutes=1))
+        self.assert_blocked(report)
+
     def test_spread_and_daily_loss_veto(self):
         self.data["quote"]["ask"] += .01
         self.assert_blocked(self.signal())

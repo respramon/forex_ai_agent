@@ -50,6 +50,25 @@ class JournalTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             self.journal.close_trade("1", 20, self.now)
 
+    def test_amend_rejects_stop_on_wrong_side_of_entry(self):
+        self.journal.open_trade({"id": "1", "pair": "EUR/USD", "side": "BUY",
+                                 "opened_at": iso(self.now), "units": 10000,
+                                 "entry": 1.1, "stop": 1.09, "target": 1.12,
+                                 "initial_risk": 100, "simulated": False})
+        with self.assertRaises(ValidationError):
+            self.journal.amend_open_trade("1", {"units": 10000, "entry": 1.1,
+                                                 "stop": 1.11, "target": 1.12,
+                                                 "initial_risk": 100})
+
+    def test_account_rejects_free_margin_above_equity(self):
+        from forex_agent.models import Account
+        with self.assertRaises(ValidationError):
+            Account.parse({"equity": 1000, "free_margin": 1000.01,
+                           "day_start_equity": 1000, "currency": "USD",
+                           "as_of": iso(self.now)})
+        with self.assertRaises(ValidationError):
+            Account(1000, 1000.01, 1000, "USD", self.now)
+
     def test_signal_quota_and_cooldown_persist_across_connections(self):
         with tempfile.TemporaryDirectory() as folder:
             path = folder + "/journal.sqlite3"

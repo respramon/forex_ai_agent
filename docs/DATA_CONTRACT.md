@@ -41,9 +41,12 @@ memanggil agent dalam backtest kustom, potong tiap frame pada waktu simulasi
 sebelum memanggilnya.
 
 Frame terbaru dibatasi usia 1,25× durasi + 60 detik; candle pemicu sinyal harus masih
-dalam satu durasi timeframe. Celah terbaru > 1,5× durasi ditolak kecuali pola penutupan
-akhir pekan yang dikenali. Hari libur/sesi khusus dapat menyebabkan penolakan
-konservatif; ini belum kalender sesi broker yang lengkap.
+dalam satu durasi timeframe. Cadence close-to-close divalidasi untuk seluruh frame,
+bukan hanya bar terbaru. Celah hanya diterima ketika cocok dengan penutupan akhir
+pekan atau maintenance rollover harian sekitar 17:00 New York yang dikenali;
+hari libur/sesi khusus lain dapat menyebabkan penolakan konservatif.
+Semua candle, quote, akun, konversi, kalender, dan sentimen harus bertanggal tidak
+lebih baru dari `as_of` snapshot agar satu analisis tidak mencampur data masa depan.
 
 ## Spesifikasi instrumen
 

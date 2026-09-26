@@ -9,7 +9,8 @@ from . import fundamentals
 from .indicators import analyze_frame
 from .journal import Journal
 from .models import (Account, Candle, CONTEXT, Instrument, RiskPolicy, SECONDS,
-                     ValidationError, iso, now_utc, number, pair_name, utc)
+                     ValidationError, iso, now_utc, number, pair_name, utc,
+                     validate_cadence, validate_common_cutoff)
 from .risk import portfolio_gate, size_position
 from .reconciliation import reconcile_positions
 from .strategies import candidate
@@ -32,7 +33,7 @@ def _fresh(raw_time, now, max_seconds, name):
     return stamp
 
 
-def _frames(snapshot: dict, timeframe: str, now) -> dict:
+def _frames(snapshot: dict, timeframe: str, now, cutoff=None, pair=None) -> dict:
     if timeframe not in SECONDS:
         raise ValidationError("Timeframe harus M5, M15, H1, H4, atau Daily.")
     parsed = {}
@@ -41,15 +42,10 @@ def _frames(snapshot: dict, timeframe: str, now) -> dict:
         if not isinstance(raw, list) or not 250 <= len(raw) <= 5000:
             raise ValidationError(f"Timeframe {tf} memerlukan 250–5000 candle tutup.")
         candles = [Candle.parse(c) for c in raw]
-        if any(b.time <= a.time for a, b in zip(candles, candles[1:])):
-            raise ValidationError(f"Timestamp {tf} tidak urut atau duplikat.")
+        validate_cadence(candles, tf, pair=pair)
+        if cutoff is not None:
+            validate_common_cutoff(cutoff, (c.time for c in candles), label=f"Candle {tf}")
         _fresh(candles[-1].time, now, SECONDS[tf] * 1.25 + 60, f"Candle {tf}")
-        # Recent discontinuities fail closed except the usual weekend closure.
-        for a, b in zip(candles[-11:-1], candles[-10:]):
-            gap = (b.time - a.time).total_seconds()
-            weekend = a.time.weekday() in (4, 5) and b.time.weekday() in (6, 0) and gap <= 3 * 86400
-            if gap > SECONDS[tf] * 1.5 and not weekend:
-                raise ValidationError(f"Candle {tf} memiliki celah data terbaru yang tidak dapat dijelaskan.")
         parsed[tf] = candles
     return parsed
 
@@ -93,12 +89,21 @@ class ForexAgent:
         report.update(pair=pair, as_of=iso(now), simulated=simulated, data_source=str(snapshot["source"]))
         if simulated:
             report["risks"].append("SIMULASI SINTETIS/HISTORIS — bukan harga atau sinyal pasar saat ini.")
-        frames = _frames(snapshot, timeframe, now)
+        snapshot_cutoff = utc(snapshot["as_of"])
+        frames = _frames(snapshot, timeframe, now, cutoff=snapshot_cutoff, pair=pair)
         technical = {tf: analyze_frame(c) for tf, c in frames.items()}
         frame = technical[timeframe]
         report.update(technical=technical, trend=frame["trend"],
                       market_condition="TRENDING" if frame["trend"] != "RANGE" else "RANGING")
-        macro = fundamentals.evaluate(snapshot.get("fundamentals", {}), pair, now, self.policy)
+        macro_input = snapshot.get("fundamentals", {})
+        macro_timestamps = []
+        if isinstance(macro_input, dict):
+            if macro_input.get("as_of") is not None:
+                macro_timestamps.append(macro_input["as_of"])
+            macro_timestamps.extend(item["as_of"] for item in macro_input.get("sentiment", [])
+                                    if isinstance(item, dict) and item.get("as_of") is not None)
+        validate_common_cutoff(snapshot_cutoff, macro_timestamps, label="Fundamental")
+        macro = fundamentals.evaluate(macro_input, pair, now, self.policy)
         report["fundamentals"] = macro
         report["risks"].extend(macro["warnings"])
         report["reasons"].append(f"Trend {timeframe}: {frame['trend']}; struktur: {frame['structure']}.")
@@ -114,8 +119,10 @@ class ForexAgent:
             raise ValidationError("Spesifikasi instrumen tidak cocok dengan pair.")
         account = Account.parse(snapshot["account"])
         _fresh(account.as_of, now, policy.max_quote_age_seconds, "Akun")
+        validate_common_cutoff(snapshot_cutoff, (account.as_of,), label="Akun")
         conversion = snapshot["conversion"]
         _fresh(conversion["time"], now, policy.max_quote_age_seconds, "Konversi")
+        validate_common_cutoff(snapshot_cutoff, (conversion["time"],), label="Konversi")
         if conversion["account_currency"] != account.currency:
             raise ValidationError("Mata uang konversi tidak cocok dengan akun.")
         if conversion.get("quote_currency") != pair.split("/")[1]:
@@ -126,6 +133,7 @@ class ForexAgent:
                 raise ValidationError("Konversi ke mata uang yang sama harus 1.")
         quote = snapshot["quote"]
         _fresh(quote["time"], now, policy.max_quote_age_seconds, "Quote")
+        validate_common_cutoff(snapshot_cutoff, (quote["time"],), label="Quote")
         bid, ask = number(quote["bid"], "bid", positive=True), number(quote["ask"], "ask", positive=True)
         if ask < bid:
             raise ValidationError("Ask lebih rendah dari bid.")

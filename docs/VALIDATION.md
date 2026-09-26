@@ -11,10 +11,10 @@ python -m scripts.generate_agent_replay_example
 python -m forex_agent backtest --data examples/agent-replay.synthetic.json --out data/agent-result.json
 python -m forex_agent backtest --data examples/backtest.synthetic.json --strategy sma --out data/sma-result.json
 python -m compileall -q forex_agent
-python -m pip wheel . --no-build-isolation --no-deps --wheel-dir dist
+python -m pip wheel . --no-deps --wheel-dir dist
 ```
 
-Hasil verifikasi: **64 pengujian lulus**, paket wheel berhasil dibangun, fixture
+Hasil verifikasi: **83 pengujian lulus**, paket wheel berhasil dibangun, fixture
 contoh berhasil diregenerasi. Tes HTTP memakai server localhost sungguhan dengan
 database sementara, sedangkan API eksternal memakai respons mock.
 
@@ -30,7 +30,9 @@ database sementara, sedangkan API eksternal memakai respons mock.
 | AI | Payload tidak membawa saldo/units, hasil resmi tidak dimutasi, respons tidak selesai gagal eksplisit |
 | HTTP | Health, autentikasi, JSON rusak/NaN, tidak ada endpoint order atau pembacaan path request |
 | Replay agent | Sinyal dari aturan yang sama dengan Signal Mode, calendar as-of, larangan actual masa depan, area entry dan next-open |
+| Replay determinism | Semua gap exit diproses sebelum fill pada open yang sama; trigger exit memakai sisi bid/ask yang diinferensikan dari midpoint dan spread |
 | Rekonsiliasi | Perbedaan ID, units, SL, snapshot akun berubah, migrasi jurnal lama |
+| API reliability | Idempotency journal-open, query boolean ketat, readiness database, penulisan JSON atomik dan permission `0600` |
 | Riset | Interval timeframe candle cocok dengan metadata model; biaya per candle dan financing pada replay |
 
 ## Belum diverifikasi langsung

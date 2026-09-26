@@ -2,6 +2,9 @@
 
 Bars use close timestamps. The engine observes a close before it can submit an
 order, fills at the *next* open, and assumes the stop wins an intrabar tie.
+OHLC values are midpoint prices; stop/target triggers use an inferred bid for
+BUY positions and ask for SELL positions, with half the configured spread on
+each side. Slippage remains an execution allowance.
 """
 
 from __future__ import annotations
@@ -14,7 +17,7 @@ from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .models import (Account, Candle, Instrument, RiskPolicy, SECONDS,
-                     ValidationError, iso, number, pair_name, utc)
+                     ValidationError, iso, number, pair_name, utc, validate_cadence)
 from .orderbook import OrderBook
 from .risk import size_position
 from .replay import AgentReplay
@@ -124,11 +127,10 @@ class Backtest:
             if not isinstance(rows, list) or len(rows) < 30:
                 raise ValidationError(f"{pair} memerlukan setidaknya 30 candle.")
             candles = [Candle.parse(row) for row in rows]
-            for a, b in zip(candles, candles[1:]):
-                gap = b.time - a.time
-                weekend = a.time.weekday() in (4, 5) and b.time.weekday() in (6, 0) and gap <= timedelta(days=3)
-                if gap != self.duration and not (gap > self.duration and weekend):
-                    raise ValidationError(f"Candle {pair} hilang, duplikat, atau intervalnya tidak valid.")
+            try:
+                validate_cadence(candles, self.timeframe, pair=pair)
+            except ValidationError as exc:
+                raise ValidationError(f"Candle {pair} hilang, duplikat, atau intervalnya tidak valid.") from exc
             spec = Instrument.parse(dataset["instruments"][pair])
             if spec.pair != pair:
                 raise ValidationError("Spesifikasi instrumen salah pair.")
@@ -198,6 +200,11 @@ class Backtest:
                          self.instruments[pair].min_commission_roundtrip)
         return change * self._conversion(pair, index, at_open=at_open) - commission
 
+    def _bid_ask(self, pair, index, midpoint):
+        """Infer side-aware quotes from midpoint OHLC and the configured spread."""
+        half_spread = self.spreads[pair][index] / 2
+        return midpoint - half_spread, midpoint + half_spread
+
     def _equity(self, index, *, at_open=False):
         return self.cash + sum(self._unrealized(pair, index, at_open=at_open)
                                for pair in self.positions)
@@ -256,14 +263,17 @@ class Backtest:
         pos, candle = self.positions[pair], self.bars[pair][index]
         when = candle.time - self.duration if at_open else candle.time
         if at_open:
-            stop = candle.open <= pos.stop if pos.side == "BUY" else candle.open >= pos.stop
-            target = candle.open >= pos.target if pos.side == "BUY" else candle.open <= pos.target
+            bid, ask = self._bid_ask(pair, index, candle.open)
+            stop = bid <= pos.stop if pos.side == "BUY" else ask >= pos.stop
+            target = bid >= pos.target if pos.side == "BUY" else ask <= pos.target
             if stop or target:
                 self._exit(pair, index, when, candle.open if stop else pos.target,
                            "stop_gap" if stop else "target_gap", 2, at_open=True)
             return
-        stop = candle.low <= pos.stop if pos.side == "BUY" else candle.high >= pos.stop
-        target = candle.high >= pos.target if pos.side == "BUY" else candle.low <= pos.target
+        bid_low, ask_low = self._bid_ask(pair, index, candle.low)
+        bid_high, ask_high = self._bid_ask(pair, index, candle.high)
+        stop = bid_low <= pos.stop if pos.side == "BUY" else ask_high >= pos.stop
+        target = bid_high >= pos.target if pos.side == "BUY" else ask_low <= pos.target
         if stop or target:
             self._exit(pair, index, when, pos.stop if stop else pos.target,
                        "stop" if stop else "target", 0)
@@ -387,6 +397,10 @@ class Backtest:
             open_time = close_time - self.duration
             for pair in self.pairs:
                 self._check_exit(pair, i, at_open=True)
+            # Resolve every open gap before validating any pending fill at the
+            # same timestamp. This keeps account equity/margin independent of
+            # pair iteration order when one symbol exits and another fills.
+            for pair in self.pairs:
                 self._fill_pending(pair, i, open_time)
             for pair in self.pairs:
                 self._check_exit(pair, i)
@@ -425,11 +439,17 @@ class Backtest:
         closed = self.trades
         wins = [trade["net_pnl"] for trade in closed if trade["net_pnl"] > 0]
         losses = [-trade["net_pnl"] for trade in closed if trade["net_pnl"] < 0]
+        realized_pnl = sum(trade["net_pnl"] for trade in closed)
+        unrealized_pnl = sum(self._unrealized(pair, len(self.times) - 1)
+                             + self.positions[pair].financing
+                             for pair in self.positions)
         metrics = {"closed_trades": len(closed),
                    "win_rate": len(wins) / len(closed) if closed else None,
                    "profit_factor": sum(wins) / sum(losses) if losses else None,
                    "expectancy_r": (sum(t["net_pnl"] / t["initial_risk"] for t in closed) / len(closed)
                                     if closed else None),
+                   "realized_pnl": realized_pnl,
+                   "unrealized_pnl": unrealized_pnl,
                    "total_return_fraction": self.equity_curve[-1]["equity"] / self.initial_equity - 1}
         return {"simulated": True, "timeframe": self.timeframe,
                 "strategy": "forex_agent_signal" if self.replay else type(self.strategy).__name__,
@@ -441,6 +461,9 @@ class Backtest:
                                 "financing_per_unit": {p: {side: self._compact(values) for side, values in sides.items()}
                                                        for p, sides in self.financing.items()},
                                 "conversion": "per bar for non-account quote, otherwise 1",
+                                "ohlc": "midpoint",
+                                "exit_trigger": "BUY uses inferred bid; SELL uses inferred ask",
+                                "execution_price": "side quote with half spread and slippage allowance",
                                 "mark_to_market": True},
                 "initial_equity": self.initial_equity, "final_equity": self.equity_curve[-1]["equity"],
                 "max_drawdown_fraction": self.max_seen_drawdown, "risk_halted": self.halted,

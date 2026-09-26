@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68,<81"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,6 +10,13 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
 dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "ruff==0.6.9",
+    "mypy==1.13.0",
+    "pip-audit==2.7.3",
+]
 
 [project.scripts]
 forex-agent = "forex_agent.cli:main"

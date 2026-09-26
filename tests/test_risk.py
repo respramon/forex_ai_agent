@@ -85,7 +85,7 @@ class RiskTests(unittest.TestCase):
                 RiskPolicy(**args)
 
     def test_equity_drawdown_and_currency_concentration(self):
-        self.assertTrue(portfolio_gate(replace(self.account, equity=9600), {}, RiskPolicy(), "EUR/USD"))
+        self.assertTrue(portfolio_gate(replace(self.account, equity=9600, free_margin=9600), {}, RiskPolicy(), "EUR/USD"))
         state = {"open_risk": 250, "currency_risk": {"USD": 250}}
         result = portfolio_gate(self.account, state, RiskPolicy(), "GBP/USD", 100)
         self.assertTrue(any("USD" in r for r in result))

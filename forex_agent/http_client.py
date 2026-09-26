@@ -1,10 +1,24 @@
 """Small HTTPS JSON transport with bounded responses, timeouts, and GET retries."""
 
 import json
+import math
 import time
 import urllib.error
 import urllib.request
 from .models import ValidationError
+
+
+def _retry_delay(error: urllib.error.HTTPError, attempt: int) -> float:
+    """Use a bounded provider hint, then fall back to exponential backoff."""
+    retry_after = error.headers.get("Retry-After") if error.headers else None
+    if retry_after:
+        try:
+            value = float(retry_after)
+            if math.isfinite(value):
+                return min(max(value, 0.0), 30.0)
+        except (TypeError, ValueError):
+            pass
+    return min(0.5 * (2 ** attempt), 8.0)
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -29,7 +43,7 @@ def request_json(url: str, *, headers=None, payload=None, timeout=20):
                 return json.loads(data)
         except urllib.error.HTTPError as exc:
             if exc.code in (429, 500, 502, 503, 504) and attempt + 1 < attempts:
-                time.sleep(0.5 * (2 ** attempt))
+                time.sleep(_retry_delay(exc, attempt))
                 continue
             raise ValidationError(f"Provider mengembalikan HTTP {exc.code}; periksa kredensial, kuota, dan akses.") from None
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):

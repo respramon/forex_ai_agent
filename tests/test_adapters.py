@@ -2,13 +2,62 @@ from copy import deepcopy
 from datetime import timedelta
 import unittest
 from urllib.parse import urlsplit
+import tempfile
+from pathlib import Path
 from forex_agent.demo import make_snapshot
 from forex_agent.llm import explain
 from forex_agent.models import ValidationError, iso, now_utc, utc
 from forex_agent.providers import OandaProvider, alpha_vantage_sentiment
+from forex_agent.providers import csv_snapshot
 
 
 class AdapterTests(unittest.TestCase):
+    def test_csv_rejects_missing_candle_interior(self):
+        metadata = {"pair": "EUR/USD", "source": "test"}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "M5.csv"
+            path.write_text("time,open,high,low,close,volume\n"
+                            "2026-01-16T10:00:00Z,1.1,1.11,1.09,1.1,1\n"
+                            "2026-01-16T10:05:00Z,1.1,1.11,1.09,1.1,1\n"
+                            "2026-01-16T10:15:00Z,1.1,1.11,1.09,1.1,1\n", encoding="utf-8")
+            with self.assertRaises(ValidationError):
+                csv_snapshot(folder, metadata)
+
+    def test_csv_allows_explicit_weekend_closure(self):
+        metadata = {"pair": "EUR/USD", "source": "test"}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "M5.csv"
+            path.write_text("time,open,high,low,close,volume\n"
+                            "2026-01-16T23:55:00Z,1.1,1.11,1.09,1.1,1\n"
+                            "2026-01-19T00:00:00Z,1.1,1.11,1.09,1.1,1\n", encoding="utf-8")
+            self.assertEqual(len(csv_snapshot(folder, metadata)["frames"]["M5"]), 2)
+
+    def test_csv_allows_known_daily_rollover_gap(self):
+        metadata = {"pair": "EUR/USD", "source": "test"}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "M5.csv"
+            path.write_text("time,open,high,low,close,volume\n"
+                            "2026-01-15T22:00:00Z,1.1,1.11,1.09,1.1,1\n"
+                            "2026-01-15T22:10:00Z,1.1,1.11,1.09,1.1,1\n", encoding="utf-8")
+            self.assertEqual(len(csv_snapshot(folder, metadata)["frames"]["M5"]), 2)
+
+    def test_csv_allows_known_xau_rollover_gap(self):
+        metadata = {"pair": "XAU/USD", "source": "test"}
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "M5.csv"
+            path.write_text("time,open,high,low,close,volume\n"
+                            "2026-01-15T22:00:00Z,2000,2001,1999,2000,1\n"
+                            "2026-01-15T23:10:00Z,2000,2001,1999,2000,1\n", encoding="utf-8")
+            self.assertEqual(len(csv_snapshot(folder, metadata)["frames"]["M5"]), 2)
+            (Path(folder) / "M15.csv").write_text("time,open,high,low,close,volume\n"
+                                                    "2026-01-15T22:00:00Z,2000,2001,1999,2000,1\n"
+                                                    "2026-01-15T23:15:00Z,2000,2001,1999,2000,1\n", encoding="utf-8")
+            self.assertEqual(len(csv_snapshot(folder, metadata)["frames"]["M15"]), 2)
+            (Path(folder) / "H1.csv").write_text("time,open,high,low,close,volume\n"
+                                                   "2026-01-15T22:00:00Z,2000,2001,1999,2000,1\n"
+                                                   "2026-01-16T00:00:00Z,2000,2001,1999,2000,1\n", encoding="utf-8")
+            self.assertEqual(len(csv_snapshot(folder, metadata)["frames"]["H1"]), 2)
+
     def test_oanda_read_only_mapping_uses_closed_candles_and_broker_spec(self):
         calls = []
         stamp = "2026-01-15T12:00:00Z"

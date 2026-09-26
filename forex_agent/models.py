@@ -4,13 +4,21 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, fields
-from datetime import datetime, timezone
-from typing import Any
+from datetime import datetime, timedelta, timezone
+from typing import Any, Iterable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 PAIRS = ("EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "XAU/USD")
 SECONDS = {"M5": 300, "M15": 900, "H1": 3600, "H4": 14400, "Daily": 86400}
 CONTEXT = {"M5": ("M15", "H1"), "M15": ("H1", "H4"),
            "H1": ("H4", "Daily"), "H4": ("Daily",), "Daily": ("H4",)}
+
+try:
+    _NEW_YORK = ZoneInfo("America/New_York")
+except ZoneInfoNotFoundError:
+    # Without the IANA database, fail closed for broker session gaps. The
+    # normal exact cadence and weekend rules remain available everywhere.
+    _NEW_YORK = None
 
 
 class ValidationError(ValueError):
@@ -55,6 +63,25 @@ def pair_name(value: str) -> str:
     return value
 
 
+def validate_trade_levels(side: str, entry: Any, stop: Any, target: Any) -> tuple[float, float, float]:
+    """Validate the directional relationship between entry, SL, and TP.
+
+    This is intentionally shared by every boundary that accepts broker levels.
+    Keeping the invariant in one place prevents a journal amend from accepting
+    a level that reconciliation would later reject (or vice versa).
+    """
+    if side not in ("BUY", "SELL"):
+        raise ValidationError("Arah transaksi harus BUY/SELL.")
+    values = tuple(number(value, name, positive=True)
+                  for name, value in (("entry", entry), ("stop", stop), ("target", target)))
+    entry_value, stop_value, target_value = values
+    valid = (stop_value < entry_value < target_value if side == "BUY"
+             else target_value < entry_value < stop_value)
+    if not valid:
+        raise ValidationError("Urutan entry, SL, TP tidak valid untuk arah transaksi.")
+    return values
+
+
 @dataclass(frozen=True)
 class Candle:
     time: datetime
@@ -72,6 +99,99 @@ class Candle:
         if l > min(o, c) or h < max(o, c) or h < l:
             raise ValidationError("OHLC tidak konsisten.")
         return cls(utc(raw["time"]), o, h, l, c, number(raw.get("volume", 0), "volume", minimum=0))
+
+
+def weekend_gap(previous: datetime, current: datetime, timeframe: str) -> bool:
+    """Return whether a cadence gap is exactly attributable to the FX weekend.
+
+    Candle timestamps are close times in UTC. Depending on the provider, the
+    last Friday close can therefore fall on Saturday UTC, and the first Sunday
+    session close can fall on Sunday or Monday UTC. We only permit a gap that
+    starts on Friday/Saturday, ends on Sunday/Monday/Tuesday, and is no more
+    than one normal interval plus the three calendar weekend days.
+    """
+    if timeframe not in SECONDS:
+        raise ValidationError("Timeframe tidak dikenal.")
+    previous, current = utc(previous), utc(current)
+    interval = timedelta(seconds=SECONDS[timeframe])
+    gap = current - previous
+    if gap <= interval or gap > interval + timedelta(days=3):
+        return False
+    if previous.weekday() not in (4, 5) or current.weekday() not in (0, 1, 6):
+        return False
+    return 0 < (current.date() - previous.date()).days <= 3
+
+
+def session_gap(previous: datetime, current: datetime, timeframe: str, pair: str | None = None) -> bool:
+    """Allow a known daily maintenance break near 17:00 New York.
+
+    OANDA's FX feed normally pauses for a few minutes at the New York rollover;
+    XAU/USD has a longer daily closure. With M5/M15 close timestamps these appear
+    as missing aligned candles even though the provider returned a complete
+    session. The local-time windows keep the exceptions narrow and do not permit
+    arbitrary historical gaps; XAU/USD H1 also needs the one fully closed bar.
+    """
+    is_xau = pair is not None and str(pair).upper().replace("_", "/") == "XAU/USD"
+    if _NEW_YORK is None or not (timeframe in ("M5", "M15") or (is_xau and timeframe == "H1")):
+        return False
+    previous, current = utc(previous), utc(current)
+    interval = timedelta(seconds=SECONDS[timeframe])
+    gap = current - previous
+    reopen_delay = timedelta(hours=1, minutes=5) if is_xau else timedelta(minutes=5)
+    if gap <= interval:
+        return False
+    previous_local = previous.astimezone(_NEW_YORK)
+    current_local = current.astimezone(_NEW_YORK)
+    if previous_local.date() != current_local.date():
+        return False
+    rollover = previous_local.replace(hour=17, minute=0, second=0, microsecond=0)
+    reopen = rollover + reopen_delay
+    if timeframe == "M5":
+        next_close = reopen + interval
+    else:
+        # M15/H1 candles are aligned to the hour in the OANDA feed, so the
+        # first post-reopen candle starts at the aligned boundary.
+        aligned_start = reopen.replace(minute=(reopen.minute // int(interval.total_seconds() // 60)) *
+                                        int(interval.total_seconds() // 60), second=0, microsecond=0)
+        next_close = aligned_start + interval
+    return previous_local == rollover and current_local == next_close
+
+
+def validate_cadence(candles: Iterable[Candle | dict], timeframe: str, *, pair: str | None = None) -> None:
+    """Require complete close-to-close cadence for an entire candle series."""
+    if timeframe not in SECONDS:
+        raise ValidationError("Timeframe tidak dikenal.")
+    interval = timedelta(seconds=SECONDS[timeframe])
+    values = [candle if isinstance(candle, Candle) else Candle.parse(candle)
+              for candle in candles]
+    for previous, current in zip(values, values[1:]):
+        gap = current.time - previous.time
+        if gap <= timedelta(0):
+            raise ValidationError(f"Timestamp {timeframe} tidak urut atau duplikat.")
+        if (gap != interval and
+                not weekend_gap(previous.time, current.time, timeframe) and
+                not session_gap(previous.time, current.time, timeframe, pair)):
+            raise ValidationError(f"Interval candle tidak sesuai timeframe {timeframe} atau ada data hilang.")
+
+
+# Descriptive alias for callers that prefer the full name.
+validate_candle_cadence = validate_cadence
+
+
+def validate_common_cutoff(cutoff: str | datetime, timestamps: Iterable[str | datetime], *,
+                           label: str = "Data") -> datetime:
+    """Ensure every timestamp belongs to one snapshot cutoff.
+
+    Older components are safe (and occur naturally when higher timeframes close
+    less often), while any component after the snapshot cutoff is look-ahead
+    data and is rejected.
+    """
+    boundary = utc(cutoff)
+    for value in timestamps:
+        stamp = utc(value)
+        if stamp > boundary:
+            raise ValidationError(f"{label} bertanggal setelah cutoff snapshot.")
+    return boundary
 
 
 @dataclass(frozen=True)
@@ -107,15 +227,25 @@ class Account:
     currency: str
     as_of: datetime
 
-    @classmethod
-    def parse(cls, raw: dict) -> "Account":
-        currency = str(raw["currency"]).upper()
+    def __post_init__(self):
+        equity = number(self.equity, "equity", positive=True)
+        free_margin = number(self.free_margin, "free_margin", minimum=0)
+        day_start = number(self.day_start_equity, "day_start_equity", positive=True)
+        currency = str(self.currency).upper()
         if len(currency) != 3 or not currency.isalpha():
             raise ValidationError("Mata uang akun harus kode tiga huruf.")
-        return cls(number(raw["equity"], "equity", positive=True),
-                   number(raw["free_margin"], "free_margin", minimum=0),
-                   number(raw["day_start_equity"], "day_start_equity", positive=True),
-                   currency, utc(raw["as_of"]))
+        if free_margin > equity + 1e-8:
+            raise ValidationError("Free margin tidak boleh melebihi equity akun.")
+        object.__setattr__(self, "equity", equity)
+        object.__setattr__(self, "free_margin", free_margin)
+        object.__setattr__(self, "day_start_equity", day_start)
+        object.__setattr__(self, "currency", currency)
+        object.__setattr__(self, "as_of", utc(self.as_of))
+
+    @classmethod
+    def parse(cls, raw: dict) -> "Account":
+        return cls(raw["equity"], raw["free_margin"], raw["day_start_equity"],
+                   raw["currency"], raw["as_of"])
 
 
 @dataclass(frozen=True)

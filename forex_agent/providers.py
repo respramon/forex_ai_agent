@@ -10,7 +10,8 @@ from pathlib import Path
 import re
 from urllib.parse import urlencode
 from .http_client import request_json
-from .models import Candle, SECONDS, ValidationError, iso, now_utc, number, pair_name, utc
+from .models import (Candle, SECONDS, ValidationError, iso, now_utc, number,
+                     pair_name, utc, validate_cadence, validate_common_cutoff)
 
 
 def read_json(path: str | Path) -> dict:
@@ -49,6 +50,14 @@ def csv_snapshot(folder: str, metadata: dict) -> dict:
                 if len(values) > 5000:
                     raise ValidationError("CSV dibatasi 5000 candle per timeframe.")
             out["frames"][tf] = values
+        # Validate every retained row, including gaps far from the latest
+        # candle. Incomplete CSV rows are omitted above; an interior omission
+        # therefore becomes a cadence failure instead of being forward-filled.
+        candles = [Candle.parse(row) for row in out["frames"][tf]]
+        validate_cadence(candles, tf, pair=metadata.get("pair"))
+        if metadata.get("as_of") is not None:
+            validate_common_cutoff(metadata["as_of"], (c.time for c in candles),
+                                   label=f"CSV {tf}")
     out["source"] = "CSV user-supplied (" + str(metadata.get("source", "unspecified")) + ")"
     return out
 
@@ -101,6 +110,7 @@ class OandaProvider:
                               (("open", "o"), ("high", "h"), ("low", "l"), ("close", "c"))},
                            "volume": c["volume"], "complete": True}
                           for c in response["candles"] if c["complete"] is True]
+            validate_cadence([Candle.parse(row) for row in frames[tf]], tf, pair=pair)
         symbols = sorted({symbol, *(trade["instrument"] for trade in broker_trades)})
         pricing = self._get(root + "/pricing", {"instruments": ",".join(symbols),
                                                 "includeHomeConversions": "true"})
@@ -147,6 +157,10 @@ class OandaProvider:
         commission = s.get("commission", {})
         per_unit = (2 * float(commission["commission"]) / float(commission["unitsTraded"])) if commission else 0
         stamp = now_utc()
+        snapshot_timestamps = [account_stamp, pricing["time"], quote["time"]]
+        for tf_candles in frames.values():
+            snapshot_timestamps.extend(candle["time"] for candle in tf_candles)
+        validate_common_cutoff(stamp, snapshot_timestamps, label="Snapshot OANDA")
         return {"pair": pair, "source": f"OANDA-{self.environment}", "simulated": False,
                 "as_of": iso(stamp), "frames": frames, "broker_open_trades": normalized_trades,
                 "quote": {"bid": float(quote["bids"][0]["price"]), "ask": float(quote["asks"][0]["price"]),

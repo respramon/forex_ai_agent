@@ -77,8 +77,11 @@ mesin antrean terdistribusi. Gunakan satu database konsisten untuk setiap akun.
 
 ## Jalur riset paper terpisah
 
-`backtest.py` memproses OHLC lengkap per simbol dalam urutan waktu tetap dan
-`orderbook.py` menyimpan order/fill **paper** serta reservasi risiko. Mode replay
+`backtest.py` memproses OHLC lengkap per simbol dalam urutan waktu tetap. Pada satu
+timestamp open, seluruh stop/target gap posisi terbuka diproses lebih dahulu, lalu
+order pending divalidasi dan diisi. Trigger exit memakai sisi bid untuk BUY dan ask
+untuk SELL yang diinferensikan dari midpoint OHLC dan spread. `orderbook.py`
+menyimpan order/fill **paper** serta reservasi risiko. Mode replay
 agent memanggil `ForexAgent.analyze` dengan hanya candle dan kalender yang telah
 tersedia pada waktu itu; jurnal simulasi mengikuti fill dan exit. Mode SMA adalah
 contoh mesin replay tersendiri. `research.py`

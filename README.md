@@ -199,9 +199,11 @@ Untuk Docker, set environment token yang sama lalu jalankan:
 docker compose up --build
 ```
 
-API berada di localhost port 8000. Semua endpoint selain `/health` membutuhkan
-`Authorization: Bearer ...`. SQLite tersimpan pada named volume. Petunjuk request
-dan batas pemakaian server ada di [API.md](docs/API.md).
+API berada di localhost port 8000. `/health` dan `/ready` tidak membutuhkan auth;
+endpoint lain membutuhkan `Authorization: Bearer ...`. SQLite tersimpan pada named
+volume. Untuk retry `journal/open`, gunakan `Idempotency-Key` atau `client_id` agar
+catatan tidak diduplikasi. Petunjuk request dan batas pemakaian server ada di
+[API.md](docs/API.md).
 
 ## Parameter bawaan
 
