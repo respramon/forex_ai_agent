@@ -7,7 +7,8 @@ oleh Python; model AI menjelaskan hasil yang telah diperiksa mesin.
 **Mulai tanpa API key:** Python 3.11+ dan standard library sudah cukup.
 
 ```bash
-cd forex-ai-agent
+git clone https://github.com/respramon/forex_ai_agent.git
+cd forex_ai_agent
 python -m forex_agent demo
 python -m forex_agent demo --scenario news
 python -m unittest discover -s tests -v
@@ -46,22 +47,34 @@ dan setup. `NO_TRADE` mengosongkan level entry, stop, target, dan RR.
 
 ## Riset paper: backtest dan baseline ML
 
-Jalur riset terpisah dari `analyze`/`risk`/jurnal akun. Dataset contoh di bawah
-**sepenuhnya sintetis**; hasilnya tidak mengukur potensi profit di pasar.
+Replay `agent` (bawaan CLI) memakai **aturan Signal Mode yang sama**: indikator,
+konfirmasi timeframe, veto kalender, sizing, dan jurnal simulasi. Dataset contoh
+di bawah **sepenuhnya sintetis**; hasilnya tidak mengukur potensi profit di pasar.
+Replay SMA tetap tersedia sebagai contoh pengujian mesin fill, dengan pilihan
+`--strategy sma` yang eksplisit.
 
 ```bash
-python -m forex_agent backtest --data examples/backtest.synthetic.json --out data/backtest-result.json
+python -m forex_agent backtest --data examples/agent-replay.synthetic.json --out data/agent-result.json
+python -m forex_agent backtest --data examples/backtest.synthetic.json --strategy sma --out data/sma-result.json
 python -m forex_agent train --data examples/backtest.synthetic.json --pair EUR/USD --timeframe M5 --out data/model.synthetic.json
 python -m forex_agent predict --model data/model.synthetic.json --data examples/backtest.synthetic.json
 ```
 
-Backtest memvalidasi candle seluruh simbol sebelum replay, memproses sinyal pada
+Replay agent memerlukan `context_frames` yang sudah tutup dan
+`fundamentals_history` berisi snapshot kalender **sebagaimana diketahui saat itu**.
+Kalender yang tidak ada/kedaluwarsa memblokir sinyal. Harga candle dan kalender
+nyata harus diperoleh dari sumber historis yang sah; contoh sintetis tidak
+mewakili pasar. Backtest memvalidasi candle seluruh simbol sebelum replay, memproses sinyal pada
 penutupan dan fill pada open berikutnya, mendahulukan stop jika stop serta target
-terjangkau pada candle yang sama, dan menghentikan order baru setelah batas
-drawdown. Output lengkap berisi event, transaksi, dan ekuitas mark-to-market.
+terjangkau pada candle yang sama, membatalkan fill agent di luar area entry,
+dan menghentikan order baru setelah batas drawdown. Spread, slippage, dan
+financing per unit dapat berupa angka tetap atau deret per candle. Output
+lengkap berisi event, transaksi, metrik, ringkasan alasan penolakan, hash dataset,
+dan ekuitas mark-to-market.
 `train` memakai fitur kausal, split menurut waktu dengan purge batas label,
 normalisasi pada training saja, dan test yang tidak digunakan untuk memilih
-ambang. Skor model belum dikalibrasi sebagai peluang menang. Format dataset,
+ambang. Timeframe model diverifikasi terhadap interval candle. Skor model belum
+dikalibrasi sebagai peluang menang. Format dataset,
 asumsi, batas, audit, benchmark dan roadmap ada di
 [PLATFORM_ROADMAP.md](docs/PLATFORM_ROADMAP.md).
 
@@ -145,7 +158,11 @@ Adapter sentimen Alpha Vantage sudah tersedia; hasilnya dapat digabungkan ke
 `fundamentals.sentiment`. Lihat [integrasi](docs/INTEGRATIONS.md).
 
 Jumlah trade terbuka snapshot harus sama dengan jurnal. Rekonsiliasi tiket, ukuran,
-dan risiko posisi secara manual sebelum memakai akun yang sudah mempunyai posisi.
+level entry/SL/TP, dan batas bawah risiko kini diperiksa pada semua posisi nyata.
+Adapter OANDA mengambil `/openTrades`; bila daftar tiket, ID jurnal, level,
+konversi, atau versi transaksi akun tidak cocok, Signal/Risk Mode ditolak.
+Simpan `broker_trade_id` di entri jurnal nyata. Posisi dari broker lain harus
+menyediakan `broker_open_trades` dengan kontrak yang sama.
 
 ## Jurnal
 
@@ -153,12 +170,19 @@ dan risiko posisi secara manual sebelum memakai akun yang sudah mempunyai posisi
 python -m forex_agent journal --db data/demo.sqlite3 open --file examples/journal_trade.json
 python -m forex_agent journal --db data/demo.sqlite3 close --id demo-001 --net-pnl 180 --closed-at 2026-01-15T14:00:00Z
 python -m forex_agent journal --db data/demo.sqlite3 summary --simulated
+# Untuk jurnal akun nyata lama, tautkan ID tiket sesudah mencocokkan detailnya:
+python -m forex_agent journal --db data/account-practice.sqlite3 link --id ID_JURNAL --broker-trade-id ID_OANDA
+# Setelah perubahan units/SL/TP broker, perbarui catatan secara konservatif:
+python -m forex_agent journal --db data/account-practice.sqlite3 amend --id ID_JURNAL --file data/amend-trade.json
 ```
 
 Masukkan P/L dalam mata uang akun **setelah semua komisi, swap, dan biaya aktual**.
 `initial_risk` adalah risiko kas awal termasuk estimasi biaya, bukan persen. Simulasi
 dan transaksi nyata dipisahkan dalam kueri. Gunakan satu database per akun dan mata
-uang. Jurnal tidak mengirim atau menutup order broker.
+uang. Untuk transaksi nyata baru, tambahkan `"broker_trade_id":"ID_OANDA"` pada
+file JSON pembukaan jurnal. File amend berisi `units`, `entry`, `stop`, `target`,
+dan `initial_risk`; cadangan risiko awal tidak boleh diturunkan. Jurnal tidak
+mengirim atau menutup order broker.
 
 ## API lokal dan Docker
 
@@ -205,7 +229,7 @@ atau validasi hasil strategi pada data pasar nyata.
 
 | Lokasi | Isi |
 |---|---|
-| `forex_agent/` | Engine, indikator, strategi, risiko, adapter, CLI, API, jurnal |
+| `forex_agent/` | Engine, indikator, strategi, risiko, replay agent, adapter, CLI, API, jurnal |
 | `forex_agent/prompts/` | Prompt sistem utama |
 | `config/` | Aturan risiko |
 | `docs/ARCHITECTURE.md` | Arsitektur dan workflow |
@@ -219,21 +243,9 @@ atau validasi hasil strategi pada data pasar nyata.
 | `tests/` | Pengujian aturan dan integrasi dengan mock |
 | `.github/workflows/` | CI Python 3.11–3.13 |
 
-## Unggah ke GitHub
+## Kontribusi dan data
 
-Ekstrak ZIP, lalu unggah **isi folder `forex-ai-agent`** sebagai root repository
-agar `.github/workflows/ci.yml` aktif. Alternatif dengan Git:
-
-```bash
-cd forex-ai-agent
-git init
-git add .
-git commit -m "Initial forex analysis agent"
-git branch -M main
-git remote add origin https://github.com/USERNAME/REPOSITORY.git
-git push -u origin main
-```
-
-Ganti USERNAME/REPOSITORY dengan repository Anda. Jangan unggah `.env`, snapshot
-akun nyata, atau database jurnal. File tersebut ditempatkan di `data/` yang diabaikan
-Git. Lisensi MIT; lihat [SECURITY.md](SECURITY.md).
+CI menjalankan tes Python 3.11–3.13 dan contoh replay sintetis. Jangan unggah
+`.env`, snapshot akun nyata, kalender berlisensi, atau database jurnal. File
+sensitif ditempatkan di `data/` yang diabaikan Git. Lisensi MIT; lihat
+[SECURITY.md](SECURITY.md).

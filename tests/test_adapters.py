@@ -20,7 +20,9 @@ class AdapterTests(unittest.TestCase):
                     "tradeUnitsPrecision": 0, "minimumTradeSize": "1", "maximumOrderUnits": "1000000",
                     "marginRate": ".04"}]}
             if path.endswith("/summary"):
-                return {"account": {"currency": "USD", "NAV": "10000", "marginAvailable": "9000", "openTradeCount": 0}}
+                return {"lastTransactionID": "10", "account": {"currency": "USD", "NAV": "10000", "marginAvailable": "9000", "openTradeCount": 0}}
+            if path.endswith("/openTrades"):
+                return {"lastTransactionID": "10", "trades": []}
             if path.endswith("/candles"):
                 return {"candles": [{"time": stamp, "complete": complete, "mid": {"o": "150", "h": "151", "l": "149", "c": "150"}, "volume": 100}
                                     for complete in (True, False)]}
@@ -36,8 +38,53 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(out["instrument"]["pip_size"], .01)
         self.assertEqual(out["conversion"]["loss_factor"], .0067)
         self.assertNotEqual(out["conversion"]["loss_factor"], out["conversion"]["gain_factor"])
+        self.assertEqual(out["broker_open_trades"], [])
         self.assertTrue(all("payload" not in kwargs for _, kwargs in calls))
         self.assertTrue(all("fxpractice" in url for url, _ in calls))
+
+    def test_oanda_snapshot_rejects_inconsistent_account_versions(self):
+        def transport(url, **kwargs):
+            path = urlsplit(url).path
+            if path.endswith("/instruments"):
+                return {"instruments": [{"name": "EUR_USD"}]}
+            if path.endswith("/summary"):
+                return {"lastTransactionID": "10", "account": {"openTradeCount": 0}}
+            if path.endswith("/openTrades"):
+                return {"lastTransactionID": "11", "trades": []}
+            raise AssertionError(path)
+        with self.assertRaisesRegex(ValidationError, "berubah"):
+            OandaProvider(token="fake", account_id="test-account", transport=transport).snapshot(
+                "EUR/USD", contract_size=100000, day_start_equity=10000, fundamentals={})
+
+    def test_oanda_maps_each_open_ticket_and_its_attached_levels(self):
+        stamp = "2026-01-15T12:00:00Z"
+        def transport(url, **kwargs):
+            path = urlsplit(url).path
+            if path.endswith("/instruments"):
+                return {"instruments": [{"name": "EUR_USD", "pipLocation": -4,
+                    "displayPrecision": 5, "tradeUnitsPrecision": 0, "minimumTradeSize": "1",
+                    "maximumOrderUnits": "1000000", "marginRate": ".04"}]}
+            if path.endswith("/summary"):
+                return {"lastTransactionID": "12", "account": {"currency": "USD", "NAV": "10000",
+                    "marginAvailable": "9000", "openTradeCount": 1}}
+            if path.endswith("/openTrades"):
+                return {"lastTransactionID": "12", "trades": [{"id": "7", "state": "OPEN",
+                    "instrument": "EUR_USD", "currentUnits": "10000", "price": "1.1",
+                    "stopLossOrder": {"price": "1.09"},
+                    "takeProfitOrder": {"price": "1.12"}}]}
+            if path.endswith("/candles"):
+                return {"candles": [{"time": stamp, "complete": True,
+                    "mid": {"o": "1.1", "h": "1.11", "l": "1.09", "c": "1.1"}, "volume": 100}]}
+            if path.endswith("/pricing"):
+                return {"time": stamp, "prices": [{"instrument": "EUR_USD", "time": stamp,
+                    "tradeable": True, "bids": [{"price": "1.1"}], "asks": [{"price": "1.10002"}]}],
+                    "homeConversions": []}
+            raise AssertionError(path)
+        out = OandaProvider(token="fake", account_id="test-account", transport=transport).snapshot(
+            "EUR/USD", contract_size=100000, day_start_equity=10000, fundamentals={})
+        self.assertEqual(out["broker_open_trades"], [{"id": "7", "pair": "EUR/USD",
+            "side": "BUY", "units": 10000, "entry": 1.1, "stop": 1.09,
+            "target": 1.12, "loss_factor": 1}])
 
     def test_sentiment_filters_stale_articles_and_uses_currency_score(self):
         stamp = now_utc() - timedelta(minutes=1)

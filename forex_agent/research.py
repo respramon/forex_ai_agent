@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import json
+from datetime import timedelta
 
 from .models import Candle, SECONDS, ValidationError, iso, number, pair_name
 
@@ -30,6 +33,19 @@ def feature_rows(raw_bars: list[dict]) -> list[dict]:
             for i in range(5, len(candles) - HORIZON)]
 
 
+def _check_timeframe(raw_bars: list[dict], timeframe: str) -> None:
+    """Reject metadata that disagrees with the actual close-to-close cadence."""
+    candles = [Candle.parse(row) for row in raw_bars]
+    interval = timedelta(seconds=SECONDS[timeframe])
+    for previous, current in zip(candles, candles[1:]):
+        gap = current.time - previous.time
+        weekend = (previous.time.weekday() in (4, 5)
+                   and current.time.weekday() in (6, 0)
+                   and interval < gap <= timedelta(days=3))
+        if gap != interval and not weekend:
+            raise ValidationError(f"Interval candle tidak sesuai timeframe {timeframe} atau ada data hilang.")
+
+
 def _sigmoid(value: float) -> float:
     if value >= 0:
         return 1 / (1 + math.exp(-value))
@@ -55,6 +71,7 @@ def train(raw_bars: list[dict], *, pair: str, timeframe: str) -> dict:
     pair = pair_name(pair)
     if timeframe not in SECONDS:
         raise ValidationError("Timeframe model tidak dikenal.")
+    _check_timeframe(raw_bars, timeframe)
     rows = feature_rows(raw_bars)
     n = len(rows)
     train_end, val_end = int(n * 0.6), int(n * 0.8)
@@ -100,6 +117,8 @@ def train(raw_bars: list[dict], *, pair: str, timeframe: str) -> dict:
     threshold = max(thresholds, key=lambda value:
                     (_metrics(validation, val_scores, value)["balanced_accuracy"] or 0, -abs(value - 0.5)))
     model = {"version": 1, "pair": pair, "timeframe": timeframe,
+             "dataset_sha256": hashlib.sha256(json.dumps(raw_bars, sort_keys=True,
+                                         separators=(",", ":"), allow_nan=False).encode()).hexdigest(),
              "features": list(FEATURES), "horizon_bars": HORIZON,
              "mean": means, "scale": scales, "weights": weights,
              "bias": bias, "threshold": threshold,
@@ -120,6 +139,10 @@ def predict(model: dict, raw_bars: list[dict]) -> dict:
     if (not isinstance(model, dict) or model.get("version") != 1 or
             model.get("features") != list(FEATURES)):
         raise ValidationError("Versi atau fitur model tidak cocok.")
+    pair_name(model.get("pair"))
+    timeframe = model.get("timeframe")
+    if timeframe not in SECONDS:
+        raise ValidationError("Timeframe model tidak dikenal.")
     size = len(FEATURES)
     if any(not isinstance(model.get(key), list) or len(model[key]) != size
            for key in ("weights", "mean", "scale")):
@@ -134,6 +157,7 @@ def predict(model: dict, raw_bars: list[dict]) -> dict:
     candles = [Candle.parse(row) for row in raw_bars]
     if len(candles) < 6 or any(b.time <= a.time for a, b in zip(candles, candles[1:])):
         raise ValidationError("Prediksi memerlukan >=6 candle urut.")
+    _check_timeframe(raw_bars, timeframe)
     values = _features(candles, len(candles) - 1)
     score = _sigmoid(bias + sum(w * (v - mean) / scale for w, v, mean, scale in
                                 zip(weights, values, means, scales)))

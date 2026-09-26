@@ -6,8 +6,10 @@ order, fills at the *next* open, and assumes the stop wins an intrabar tie.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import timedelta, timezone
+import hashlib
+import json
 from typing import Protocol
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -15,6 +17,7 @@ from .models import (Account, Candle, Instrument, RiskPolicy, SECONDS,
                      ValidationError, iso, number, pair_name, utc)
 from .orderbook import OrderBook
 from .risk import size_position
+from .replay import AgentReplay
 
 
 class Strategy(Protocol):
@@ -48,6 +51,7 @@ class Pending:
     reserved_risk: float
     margin: float
     signal_time: object
+    entry_area: tuple[float, float] | None = None
 
 
 @dataclass
@@ -62,15 +66,22 @@ class Position:
     opened_at: object
     margin: float
     initial_risk: float
+    financing: float = 0
 
 
 class Backtest:
     def __init__(self, dataset: dict, strategy: Strategy | None = None,
-                 policy: RiskPolicy | None = None):
+                 policy: RiskPolicy | None = None, *, agent_replay: bool = False):
         if dataset.get("simulated") is not True:
             raise ValidationError("Backtest memerlukan simulated=true; data bukan quote berjalan.")
+        if agent_replay and strategy is not None:
+            raise ValidationError("Pilih agent_replay atau strategi kustom, bukan keduanya.")
         self.policy = policy or RiskPolicy()
         self.strategy = strategy or SmaCross()
+        self.agent_replay = agent_replay
+        self.source = str(dataset.get("source", "HISTORICAL USER-SUPPLIED"))
+        self.dataset_sha256 = hashlib.sha256(json.dumps(dataset, sort_keys=True,
+                                    separators=(",", ":"), allow_nan=False).encode()).hexdigest()
         self.timeframe = dataset["timeframe"]
         if self.timeframe not in SECONDS:
             raise ValidationError("Timeframe backtest tidak dikenal.")
@@ -107,6 +118,7 @@ class Backtest:
         self.instruments = {}
         self.spreads = {}
         self.slippages = {}
+        self.financing = {}
         for pair in self.pairs:
             rows = raw_bars[pair]
             if not isinstance(rows, list) or len(rows) < 30:
@@ -121,9 +133,13 @@ class Backtest:
             if spec.pair != pair:
                 raise ValidationError("Spesifikasi instrumen salah pair.")
             self.bars[pair], self.raw[pair], self.instruments[pair] = candles, rows, spec
-            self.spreads[pair] = number(settings["spread"][pair], "spread", minimum=0)
-            self.slippages[pair] = number(settings.get("slippage", {}).get(pair, 0),
-                                          "slippage", minimum=0)
+            self.spreads[pair] = self._series(settings["spread"][pair], len(rows), "spread", minimum=0)
+            self.slippages[pair] = self._series(settings.get("slippage", {}).get(pair, 0),
+                                                len(rows), "slippage", minimum=0)
+            financing = settings.get("financing_per_unit", {}).get(pair, {})
+            self.financing[pair] = {side: self._series(financing.get(side, 0), len(rows),
+                                                     "financing_per_unit")
+                                    for side in ("BUY", "SELL")}
             if pair.split("/")[1] != self.currency:
                 for candle, row in zip(candles, rows):
                     if row.get("conversion_time") != iso(candle.time):
@@ -144,6 +160,18 @@ class Backtest:
         self.equity_curve: list[dict] = []
         self.last_action = None
         self._ran = False
+        self.replay = AgentReplay(self, dataset) if agent_replay else None
+
+    @staticmethod
+    def _series(raw, length, name, *, minimum=None):
+        values = raw if isinstance(raw, list) else [raw] * length
+        if len(values) != length:
+            raise ValidationError(f"{name} harus satu nilai atau satu nilai per candle.")
+        return [number(value, name, minimum=minimum) for value in values]
+
+    @staticmethod
+    def _compact(values):
+        return values[0] if all(value == values[0] for value in values) else values
 
     def _conversion(self, pair, index, *, at_open=False):
         # At the new bar's open, only the previous completed conversion is known.
@@ -163,7 +191,7 @@ class Backtest:
     def _unrealized(self, pair, index, *, at_open=False):
         pos = self.positions[pair]
         mid = self.bars[pair][index].open if at_open else self.bars[pair][index].close
-        half_cost = (self.spreads[pair] + self.slippages[pair]) / 2
+        half_cost = (self.spreads[pair][index] + self.slippages[pair][index]) / 2
         exit_price = mid - half_cost if pos.side == "BUY" else mid + half_cost
         change = (exit_price - pos.entry) * (1 if pos.side == "BUY" else -1) * pos.units
         commission = max(pos.units * self.instruments[pair].commission_per_unit_roundtrip,
@@ -202,7 +230,7 @@ class Backtest:
     def _exit(self, pair, index, when, midpoint, reason, phase, *, at_open=False):
         pos = self.positions.pop(pair)
         sign = 1 if pos.side == "BUY" else -1
-        exit_price = midpoint - sign * (self.spreads[pair] + self.slippages[pair]) / 2
+        exit_price = midpoint - sign * (self.spreads[pair][index] + self.slippages[pair][index]) / 2
         change = (exit_price - pos.entry) * sign * pos.units
         factor = self._conversion(pair, index, at_open=at_open)
         fee = max(pos.units * self.instruments[pair].commission_per_unit_roundtrip,
@@ -210,13 +238,17 @@ class Backtest:
         pnl = change * factor - fee
         self.cash += pnl
         self.orders.close(pos.client_id, when)
+        net_pnl = pnl + pos.financing
+        if self.replay:
+            self.replay.closed(pos, when, net_pnl)
         trade = {"order_id": pos.client_id, "pair": pair, "side": pos.side,
                  "units": pos.units, "entry": pos.entry, "exit": exit_price,
                  "opened_at": iso(pos.opened_at), "closed_at": iso(when),
-                 "reason": reason, "net_pnl": pnl, "initial_risk": pos.initial_risk}
+                 "reason": reason, "net_pnl": net_pnl, "financing": pos.financing,
+                 "initial_risk": pos.initial_risk}
         self.trades.append(trade)
         self.last_action = when
-        self._emit(when, phase, pair, "exit", reason=reason, net_pnl=pnl)
+        self._emit(when, phase, pair, "exit", reason=reason, net_pnl=net_pnl)
 
     def _check_exit(self, pair, index, at_open=False):
         if pair not in self.positions:
@@ -241,6 +273,10 @@ class Backtest:
         if order is None:
             return
         candle, instrument = self.bars[pair][index], self.instruments[pair]
+        if order.entry_area is not None and not order.entry_area[0] <= candle.open <= order.entry_area[1]:
+            self.orders.cancel(order.client_id, when)
+            self._emit(when, 2, pair, "fill_rejected", reason="Open di luar area entry sinyal.")
+            return
         conversion = self._conversion(pair, index, at_open=True)
         account = self._account(index, at_open=True)
         try:
@@ -249,7 +285,7 @@ class Backtest:
                                   conversion={"account_currency": self.currency,
                                               "loss_factor": conversion, "gain_factor": conversion,
                                               "position_factor": conversion},
-                                  spread=self.spreads[pair], slippage=self.slippages[pair],
+                                  spread=self.spreads[pair][index], slippage=self.slippages[pair][index],
                                   policy=self.policy, requested_units=order.units)
         except ValidationError:
             check = {"approved": False}
@@ -258,12 +294,14 @@ class Backtest:
             self._emit(when, 2, pair, "fill_rejected", reason="Gap, biaya, risiko atau RR berubah.")
             return
         sign = 1 if order.side == "BUY" else -1
-        price = candle.open + sign * (self.spreads[pair] + self.slippages[pair]) / 2
+        price = candle.open + sign * (self.spreads[pair][index] + self.slippages[pair][index]) / 2
         self.orders.fill(order.client_id, execution_id=order.client_id + ":fill",
                          units=order.units, price=price, filled_at=when)
         self.positions[pair] = Position(order.client_id, pair, order.side, order.units,
                                         price, order.stop, order.target, when,
                                         check["estimated_margin"], check["estimated_loss"])
+        if self.replay:
+            self.replay.opened(self.positions[pair])
         self.last_action = when
         self._emit(when, 2, pair, "fill", price=price, units=order.units)
 
@@ -288,7 +326,7 @@ class Backtest:
         stop = mid - sign * distance
         factor = self._conversion(pair, index)
         instrument = self.instruments[pair]
-        cost = (self.spreads[pair] + self.slippages[pair]) * factor + instrument.commission_per_unit_roundtrip
+        cost = (self.spreads[pair][index] + self.slippages[pair][index]) * factor + instrument.commission_per_unit_roundtrip
         reward = ((self.policy.min_rr + 0.25) * (distance * factor + cost) + cost) / factor
         target = mid + sign * reward
         account = self._account(index)
@@ -298,7 +336,7 @@ class Backtest:
                                  conversion={"account_currency": self.currency,
                                              "loss_factor": factor, "gain_factor": factor,
                                              "position_factor": factor},
-                                 spread=self.spreads[pair], slippage=self.slippages[pair],
+                                 spread=self.spreads[pair][index], slippage=self.slippages[pair][index],
                                  policy=self.policy)
             if not risk["approved"]:
                 raise ValidationError(" ".join(risk["reasons"]))
@@ -314,7 +352,33 @@ class Backtest:
                                      risk["estimated_loss"], risk["estimated_margin"], when)
         self._emit(when, 1, pair, "order_submitted", units=risk["units"])
 
+    def _agent_signal(self, pair, index, report):
+        if report["status"] not in ("BUY", "SELL"):
+            return
+        when, risk = self.times[index], report["risk"]
+        client_id = f"paper:{pair}:{iso(when)}"
+        try:
+            self.orders.submit(client_id=client_id, pair=pair, side=report["side"],
+                               units=risk["units"], estimated_risk=risk["estimated_loss"],
+                               created_at=when, account=self._account(index), policy=self.policy,
+                               journal_state=self._journal_state(index))
+        except ValidationError as exc:
+            self._emit(when, 1, pair, "signal_rejected", reason=str(exc))
+            return
+        self.pending[pair] = Pending(client_id, pair, report["side"], report["stop_loss"],
+                                     report["take_profit"], risk["units"], risk["estimated_loss"],
+                                     risk["estimated_margin"], when, tuple(report["entry_area"]))
+        self._emit(when, 1, pair, "order_submitted", units=risk["units"],
+                   signal_id=report["signal_id"], setup=report["setup"])
+
     def run(self) -> dict:
+        try:
+            return self._run()
+        finally:
+            if self.replay:
+                self.replay.close()
+
+    def _run(self) -> dict:
         if self._ran:
             raise ValidationError("Backtest hanya dapat dijalankan satu kali.")
         self._ran = True
@@ -326,6 +390,12 @@ class Backtest:
                 self._fill_pending(pair, i, open_time)
             for pair in self.pairs:
                 self._check_exit(pair, i)
+                if pair in self.positions:
+                    charge = self.positions[pair].units * self.financing[pair][self.positions[pair].side][i]
+                    if charge:
+                        self.cash += charge
+                        self.positions[pair].financing += charge
+                        self._emit(close_time, 0, pair, "financing", amount=charge)
             equity = self._equity(i)
             self.peak_equity = max(self.peak_equity, equity)
             drawdown = 1 - equity / self.peak_equity
@@ -339,19 +409,42 @@ class Backtest:
                 self.pending.clear()
             self.equity_curve.append({"time": iso(close_time), "equity": equity})
             for pair in self.pairs:
-                signal = self.strategy.on_close(pair, tuple(self.bars[pair][:i + 1]))
-                if signal is not None:
-                    self._signal(pair, i, signal)
+                if self.replay:
+                    if not self.halted and pair not in self.positions and pair not in self.pending:
+                        report = self.replay.report(pair, i)
+                        if report is not None:
+                            self._agent_signal(pair, i, report)
+                else:
+                    signal = self.strategy.on_close(pair, tuple(self.bars[pair][:i + 1]))
+                    if signal is not None:
+                        self._signal(pair, i, signal)
         for pair, order in sorted(self.pending.items()):
             self.orders.cancel(order.client_id, self.times[-1])
             self._emit(self.times[-1], 3, pair, "unfilled_at_end")
         self.pending.clear()
+        closed = self.trades
+        wins = [trade["net_pnl"] for trade in closed if trade["net_pnl"] > 0]
+        losses = [-trade["net_pnl"] for trade in closed if trade["net_pnl"] < 0]
+        metrics = {"closed_trades": len(closed),
+                   "win_rate": len(wins) / len(closed) if closed else None,
+                   "profit_factor": sum(wins) / sum(losses) if losses else None,
+                   "expectancy_r": (sum(t["net_pnl"] / t["initial_risk"] for t in closed) / len(closed)
+                                    if closed else None),
+                   "total_return_fraction": self.equity_curve[-1]["equity"] / self.initial_equity - 1}
         return {"simulated": True, "timeframe": self.timeframe,
+                "strategy": "forex_agent_signal" if self.replay else type(self.strategy).__name__,
+                "dataset_sha256": self.dataset_sha256, "data_source": self.source,
+                "risk_policy": asdict(self.policy),
                 "assumptions": {"fill": "next_open", "intrabar_tie": "stop_first",
-                                "spread": self.spreads, "slippage": self.slippages,
+                                "spread": {p: self._compact(v) for p, v in self.spreads.items()},
+                                "slippage": {p: self._compact(v) for p, v in self.slippages.items()},
+                                "financing_per_unit": {p: {side: self._compact(values) for side, values in sides.items()}
+                                                       for p, sides in self.financing.items()},
                                 "conversion": "per bar for non-account quote, otherwise 1",
                                 "mark_to_market": True},
                 "initial_equity": self.initial_equity, "final_equity": self.equity_curve[-1]["equity"],
                 "max_drawdown_fraction": self.max_seen_drawdown, "risk_halted": self.halted,
-                "trades": self.trades, "open_positions": sorted(self.positions),
+                "metrics": metrics, "trades": self.trades, "open_positions": sorted(self.positions),
+                "decision_summary": ({"status": dict(self.replay.status_counts),
+                                      "blocks": dict(self.replay.block_counts)} if self.replay else None),
                 "equity_curve": self.equity_curve, "events": self.events}

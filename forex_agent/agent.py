@@ -11,6 +11,7 @@ from .journal import Journal
 from .models import (Account, Candle, CONTEXT, Instrument, RiskPolicy, SECONDS,
                      ValidationError, iso, now_utc, number, pair_name, utc)
 from .risk import portfolio_gate, size_position
+from .reconciliation import reconcile_positions
 from .strategies import candidate
 
 
@@ -136,6 +137,9 @@ class ForexAgent:
         open_count = number(snapshot["account"]["open_trade_count"], "open_trade_count", minimum=0)
         if int(open_count) != open_count or int(open_count) != state["open_positions"]:
             blocks.append("Jumlah transaksi terbuka akun berbeda dari jurnal; rekonsiliasi jurnal sebelum analisis risiko.")
+        if not simulated:
+            blocks.extend(reconcile_positions(snapshot.get("broker_open_trades"),
+                                               self.journal.open_positions(False), int(open_count)))
         if now >= frames[timeframe][-1].time + timedelta(seconds=SECONDS[timeframe]):
             blocks.append("Candle pemicu sudah kedaluwarsa; tunggu snapshot dengan candle terbaru.")
         if quote.get("tradeable") is not True:

@@ -24,6 +24,12 @@
     "simulated": {
       "type": "boolean"
     },
+    "broker_open_trades": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/broker_trade"
+      }
+    },
     "frames": {
       "type": "object",
       "minProperties": 1,
@@ -331,8 +337,27 @@
     "conversion",
     "fundamentals"
   ],
+  "allOf": [{
+    "if": {"properties": {"simulated": {"const": false}}, "required": ["simulated"]},
+    "then": {"required": ["broker_open_trades"]}
+  }],
   "additionalProperties": false,
   "$defs": {
+    "broker_trade": {
+      "type": "object",
+      "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "pair": {"enum": ["EUR/USD", "GBP/USD", "USD/JPY", "AUD/USD", "XAU/USD"]},
+        "side": {"enum": ["BUY", "SELL"]},
+        "units": {"type": "number", "exclusiveMinimum": 0},
+        "entry": {"type": "number", "exclusiveMinimum": 0},
+        "stop": {"type": ["number", "null"]},
+        "target": {"type": ["number", "null"]},
+        "loss_factor": {"type": ["number", "null"]}
+      },
+      "required": ["id", "pair", "side", "units", "entry", "stop", "target", "loss_factor"],
+      "additionalProperties": false
+    },
     "candle": {
       "type": "object",
       "properties": {

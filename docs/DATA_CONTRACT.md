@@ -14,6 +14,7 @@ Schema mendeskripsikan bentuk JSON; engine juga memeriksa hubungan antar-field.
 | `quote` | Bid, ask, timestamp asli, flag tradeable |
 | `instrument` | Spesifikasi units/tick/pip/margin/komisi dan sumbernya |
 | `account` | Ekuitas, free margin, ekuitas awal hari, mata uang, open_trade_count, waktu |
+| `broker_open_trades` | Wajib untuk snapshot nyata: ID broker, pair, arah, units, entry, stop, target, faktor konversi rugi setiap tiket |
 | `conversion` | Mata uang quote/akun, faktor loss/gain/position, waktu |
 | `fundamentals` | Kalender, cakupan, sumber, event, sentimen opsional |
 
@@ -32,7 +33,9 @@ pasar forex global; engine tidak memakai volume untuk mengklaim tekanan institus
 
 Mode nyata memakai jam komputer UTC, bukan `as_of` sebagai waktu kebenaran. Simulasi
 menggunakan `as_of` tetap agar reproduktif; data harus tersedia pada waktu itu.
-Jalur analisis tetap menilai satu snapshot. Replay multi-bar terpisah menggunakan
+Jalur analisis tetap menilai satu snapshot. Replay multi-bar dengan aturan
+Signal Mode memakai `context_frames` dan `fundamentals_history` yang dipotong
+berdasarkan waktu. Replay SMA contoh memakai candle pemicu saja. Keduanya menggunakan
 kontrak input dan asumsi di [PLATFORM_ROADMAP.md](PLATFORM_ROADMAP.md). Jika
 memanggil agent dalam backtest kustom, potong tiap frame pada waktu simulasi
 sebelum memanggilnya.
@@ -57,8 +60,14 @@ quote yang sama dengan mata uang akun wajib mempunyai faktor 1. OANDA menggunaka
 homeConversions yang diminta lewat pricing; tidak diasumsikan nilai pip tetap USD 10.
 
 `account.open_trade_count` wajib sama dengan jumlah trade terbuka jurnal untuk
-mode Signal/Risk. Ini hanya pemeriksaan jumlah; tiket dan risiko aktual tetap harus
-direkonsiliasi. Snapshot riil tanpa field tersebut tidak boleh menghasilkan sinyal.
+mode Signal/Risk. Untuk snapshot nyata, `broker_open_trades` wajib tersedia dan
+setiap ID broker, pair, arah, units, entry, SL, TP, serta batas bawah risiko
+harus cocok dengan jurnal. Posisi tanpa attached stop/target atau faktor
+konversi diblokir. Rekonsiliasi ini membandingkan snapshot yang dibaca saat itu;
+perubahan broker sesudah snapshot tetap memerlukan pengambilan ulang.
+Jika posisi mengalami partial close atau SL/TP berubah, gunakan `journal amend`
+untuk mencatat detail broker sebelum meminta sinyal lain. `initial_risk` dalam
+jurnal tidak boleh diturunkan melalui amend dan harus naik saat units bertambah.
 
 ## Kalender dan sentimen
 

@@ -51,6 +51,17 @@ class APITests(unittest.TestCase):
         self.assertEqual(self.request("POST", "/v1/order", "{}")[0], 404)
         self.assertEqual(self.request("POST", "/v1/analyze", '{"snapshot":"/etc/passwd"}')[0], 400)
 
+    def test_existing_real_journal_trade_can_link_a_broker_ticket(self):
+        trade = {"id": "api-link", "pair": "EUR/USD", "side": "BUY",
+                 "opened_at": "2026-01-15T10:00:00Z", "units": 10000,
+                 "entry": 1.1, "stop": 1.09, "target": 1.12,
+                 "initial_risk": 110, "simulated": False}
+        self.assertEqual(self.request("POST", "/v1/journal/open", json.dumps(trade))[0], 200)
+        link = {"trade_id": "api-link", "broker_trade_id": "ticket-7"}
+        self.assertEqual(self.request("POST", "/v1/journal/link", json.dumps(link))[0], 200)
+        self.assertEqual(self.request("POST", "/v1/journal/link", json.dumps(
+            {**link, "broker_trade_id": "ticket-8"}))[0], 400)
+
 
 if __name__ == "__main__":
     unittest.main()

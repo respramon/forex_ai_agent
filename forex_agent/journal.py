@@ -35,13 +35,18 @@ class Journal:
             opened_at TEXT NOT NULL, closed_at TEXT, units REAL NOT NULL,
             entry REAL NOT NULL, stop REAL NOT NULL, target REAL NOT NULL,
             initial_risk REAL NOT NULL, net_pnl REAL, setup TEXT NOT NULL,
-            notes TEXT NOT NULL, simulated INTEGER NOT NULL
+            notes TEXT NOT NULL, simulated INTEGER NOT NULL,
+            broker_trade_id TEXT
         );
         CREATE TABLE IF NOT EXISTS signals (
             fingerprint TEXT PRIMARY KEY, created_at TEXT NOT NULL,
             simulated INTEGER NOT NULL, report TEXT NOT NULL
         );
         """)
+        if "broker_trade_id" not in {row["name"] for row in self.db.execute("PRAGMA table_info(trades)")}:
+            self.db.execute("ALTER TABLE trades ADD COLUMN broker_trade_id TEXT")
+        self.db.execute("CREATE UNIQUE INDEX IF NOT EXISTS trades_broker_id_unique "
+                        "ON trades(broker_trade_id) WHERE broker_trade_id IS NOT NULL AND simulated=0")
 
     def close(self):
         self.db.close()
@@ -63,16 +68,60 @@ class Journal:
         if not isinstance(simulated, bool):
             raise ValidationError("simulated harus boolean.")
         trade_id = str(raw.get("id") or uuid.uuid4())
+        broker_id = raw.get("broker_trade_id")
+        if broker_id is not None and (simulated or not isinstance(broker_id, str) or not broker_id.strip()):
+            raise ValidationError("broker_trade_id hanya untuk transaksi nyata dan harus string nonkosong.")
         try:
             with self.db:
-                self.db.execute("INSERT INTO trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+                self.db.execute("INSERT INTO trades "
+                                "(id,pair,side,opened_at,closed_at,units,entry,stop,target,initial_risk,"
+                                "net_pnl,setup,notes,simulated,broker_trade_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (
                     trade_id, pair, side, iso(utc(raw["opened_at"])), None,
                     number(raw["units"], "units", positive=True), entry, stop, target,
                     number(raw["initial_risk"], "initial_risk", positive=True), None,
-                    str(raw.get("setup", "manual")), str(raw.get("notes", "")), int(simulated)))
+                    str(raw.get("setup", "manual")), str(raw.get("notes", "")), int(simulated), broker_id))
         except sqlite3.IntegrityError as exc:
-            raise ValidationError("ID transaksi sudah ada.") from exc
+            raise ValidationError("ID transaksi atau broker_trade_id sudah ada.") from exc
         return trade_id
+
+    def link_broker_trade(self, trade_id: str, broker_trade_id: str) -> None:
+        """Attach a broker ID to a legacy real journal record after manual verification."""
+        if not isinstance(broker_trade_id, str) or not broker_trade_id.strip():
+            raise ValidationError("broker_trade_id harus string nonkosong.")
+        try:
+            with self.db:
+                row = self.db.execute("SELECT * FROM trades WHERE id=?", (trade_id,)).fetchone()
+                if row is None or row["simulated"] or row["closed_at"] is not None:
+                    raise ValidationError("Hanya transaksi nyata yang terbuka dapat ditautkan.")
+                if row["broker_trade_id"] not in (None, broker_trade_id):
+                    raise ValidationError("Transaksi sudah ditautkan ke ID broker berbeda.")
+                self.db.execute("UPDATE trades SET broker_trade_id=? WHERE id=?", (broker_trade_id, trade_id))
+        except sqlite3.IntegrityError as exc:
+            raise ValidationError("ID broker sudah dipakai transaksi lain.") from exc
+
+    def open_positions(self, simulated: bool) -> list[dict]:
+        return [dict(row) for row in self.db.execute(
+            "SELECT * FROM trades WHERE simulated=? AND closed_at IS NULL", (int(simulated),))]
+
+    def amend_open_trade(self, trade_id: str, raw: dict) -> None:
+        """Record changed broker levels/units without releasing the original risk reserve."""
+        values = {key: number(raw[key], key, positive=True)
+                  for key in ("units", "entry", "stop", "target", "initial_risk")}
+        with self.db:
+            row = self.db.execute("SELECT * FROM trades WHERE id=?", (trade_id,)).fetchone()
+            if row is None or row["simulated"] or row["closed_at"] is not None:
+                raise ValidationError("Hanya transaksi nyata yang terbuka dapat diperbarui.")
+            valid_levels = (values["target"] > values["entry"] and values["stop"] < values["target"]
+                            if row["side"] == "BUY" else
+                            values["target"] < values["entry"] and values["stop"] > values["target"])
+            if not valid_levels:
+                raise ValidationError("SL dan TP tidak sesuai arah transaksi.")
+            minimum = row["initial_risk"] * max(1, values["units"] / row["units"])
+            if values["initial_risk"] + 1e-8 < minimum:
+                raise ValidationError("initial_risk tidak boleh turun atau lebih kecil setelah units bertambah.")
+            self.db.execute("UPDATE trades SET units=?, entry=?, stop=?, target=?, initial_risk=? WHERE id=?",
+                            (values["units"], values["entry"], values["stop"], values["target"],
+                             values["initial_risk"], trade_id))
 
     def close_trade(self, trade_id: str, net_pnl: float, closed_at: datetime) -> None:
         net_pnl = number(net_pnl, "net_pnl")

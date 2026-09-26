@@ -71,9 +71,17 @@ def parser():
     close.add_argument("--id", required=True)
     close.add_argument("--net-pnl", required=True, type=float)
     close.add_argument("--closed-at", required=True)
+    link = sub.add_parser("link")
+    link.add_argument("--id", required=True)
+    link.add_argument("--broker-trade-id", required=True)
+    amend = sub.add_parser("amend")
+    amend.add_argument("--id", required=True)
+    amend.add_argument("--file", required=True)
     sub.add_parser("summary").add_argument("--simulated", action="store_true")
     cmd = commands.add_parser("backtest", help="Replay paper atas candle historis yang lengkap.")
     cmd.add_argument("--data", required=True)
+    cmd.add_argument("--strategy", choices=("agent", "sma"), default="agent",
+                     help="agent memakai aturan sinyal utama; sma hanya contoh mesin replay.")
     cmd.add_argument("--policy")
     cmd.add_argument("--out")
     cmd = commands.add_parser("train", help="Latih baseline logistic dengan split kronologis.")
@@ -131,17 +139,27 @@ def main(argv=None):
                 elif args.action == "close":
                     journal.close_trade(args.id, args.net_pnl, utc(args.closed_at))
                     result = {"status": "closed"}
+                elif args.action == "link":
+                    journal.link_broker_trade(args.id, args.broker_trade_id)
+                    result = {"status": "linked", "trade_id": args.id,
+                              "broker_trade_id": args.broker_trade_id}
+                elif args.action == "amend":
+                    journal.amend_open_trade(args.id, read_json(args.file))
+                    result = {"status": "amended", "trade_id": args.id}
                 else:
                     result = journal.summary(args.simulated)
                 print(json.dumps(result, indent=2, ensure_ascii=False, allow_nan=False))
         elif command == "backtest":
-            result = Backtest(read_json(args.data), policy=policy).run()
+            result = Backtest(read_json(args.data), policy=policy,
+                              agent_replay=args.strategy == "agent").run()
             if args.out:
                 write_json(args.out, result)
             print(json.dumps({k: v for k, v in result.items() if k not in ("events", "equity_curve")},
                              indent=2, ensure_ascii=False, allow_nan=False))
         elif command == "train":
             data = read_json(args.data)
+            if "timeframe" in data and data["timeframe"] != args.timeframe:
+                raise ValidationError("Timeframe dataset tidak cocok dengan --timeframe.")
             raw = data["bars"][args.pair] if isinstance(data, dict) else data
             result = train(raw, pair=args.pair, timeframe=args.timeframe)
             write_json(args.out, result)
@@ -149,6 +167,8 @@ def main(argv=None):
                               "test": result["test"]}, indent=2, ensure_ascii=False))
         elif command == "predict":
             model, data = read_json(args.model), read_json(args.data)
+            if "timeframe" in data and data["timeframe"] != model["timeframe"]:
+                raise ValidationError("Timeframe dataset tidak cocok dengan model.")
             raw = data["bars"][model["pair"]] if isinstance(data, dict) else data
             print(json.dumps(predict(model, raw), indent=2, ensure_ascii=False))
         return 0

@@ -103,6 +103,19 @@ class BacktestTests(unittest.TestCase):
         self.assertEqual(fills(first), fills(second))
         self.assertEqual(len(fills(first)), 2)
 
+    def test_variable_spread_and_financing_change_mark_to_market(self):
+        base = dataset()
+        variable = dataset()
+        variable["assumptions"]["spread"]["EUR/USD"] = [0.00002] * 16 + [0.00004] * 24
+        variable["assumptions"]["financing_per_unit"] = {"EUR/USD": {"BUY": -0.0000001}}
+        ordinary = Backtest(base, strategy=TrackingStrategy()).run()
+        expensive = Backtest(variable, strategy=TrackingStrategy()).run()
+        self.assertLess(expensive["final_equity"], ordinary["final_equity"])
+        self.assertIn("financing", [item["kind"] for item in expensive["events"]])
+        variable["assumptions"]["spread"]["EUR/USD"] = [0.00002] * 39
+        with self.assertRaisesRegex(ValidationError, "spread"):
+            Backtest(variable)
+
 
 if __name__ == "__main__":
     unittest.main()

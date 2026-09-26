@@ -21,4 +21,5 @@ Jangan memasukkan data pribadi ke teks sumber berita/alasan custom.
 
 Cadangkan SQLite dan simpan satu database per akun. Jangan mereset atau menghapus
 jurnal untuk menghindari batas risiko. Catatan manual harus cocok dengan broker;
-aplikasi memeriksa jumlah posisi tetapi belum merekonsiliasi setiap tiket dan SL.
+aplikasi membandingkan tiket dan SL dari snapshot, tetapi belum menerima update
+posisi real-time atau merekonsiliasi perubahan yang terjadi setelah snapshot.

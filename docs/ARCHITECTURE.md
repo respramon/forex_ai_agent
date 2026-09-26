@@ -46,7 +46,9 @@ AI tidak mempunyai jalur balik untuk mengganti keputusan atau mengirim order.
 4. Hitung trend, momentum, volatilitas, struktur, pola, S/R, dan Fibonacci.
 5. Validasi cakupan dan freshness kalender. Tolak periode high-impact.
 6. Baca jurnal: jumlah transaksi, P/L hari ini, risiko posisi, eksposur mata uang,
-   cooldown dan kecocokan jumlah trade akun. Periksa ekuitas untuk floating drawdown.
+   cooldown dan kecocokan jumlah trade akun. Untuk akun nyata, cocokkan setiap
+   ID tiket, pair, arah, units, entry/SL/TP dan batas bawah risiko. Periksa ekuitas
+   untuk floating drawdown.
 7. Pilih kandidat; periksa keselarasan timeframe, RSI, momentum, candle, dan BB.
 8. Tentukan area entry pada penutupan terakhir, SL berbasis ATR/struktur, dan target
    minimum RR bersih. Tolak jika S/R terkonfirmasi pada timeframe terkait menghalangi target.
@@ -76,8 +78,10 @@ mesin antrean terdistribusi. Gunakan satu database konsisten untuk setiap akun.
 ## Jalur riset paper terpisah
 
 `backtest.py` memproses OHLC lengkap per simbol dalam urutan waktu tetap dan
-`orderbook.py` menyimpan order/fill **paper** serta reservasi risiko. Jalur ini
-tidak mengubah kontrak analisis `ForexAgent` atau jurnal manual. `research.py`
+`orderbook.py` menyimpan order/fill **paper** serta reservasi risiko. Mode replay
+agent memanggil `ForexAgent.analyze` dengan hanya candle dan kalender yang telah
+tersedia pada waktu itu; jurnal simulasi mengikuti fill dan exit. Mode SMA adalah
+contoh mesin replay tersendiri. `research.py`
 melatih model baseline di data historis dengan split kronologis; skornya tidak
 dipakai untuk mengirim order. Detail dan rencana migrasi ada di
 [PLATFORM_ROADMAP.md](PLATFORM_ROADMAP.md).

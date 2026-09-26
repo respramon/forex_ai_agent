@@ -115,4 +115,5 @@ SL 1,0950 → 20.000 units = 0,20 lot jika 1 lot = 100.000 units. Untuk XAU/USD 
 Pengaturan broker, gap, swap, likuiditas, slippage aktual, perubahan konversi, dan
 ketidaklengkapan jurnal dapat membuat rugi riil berbeda. Stop loss dan estimasi
 risiko tidak menjamin batas kerugian. Validasi dengan paper trading dan data aktual
-sebelum mengandalkan strategi; paket ini belum menyertakan backtest performa.
+sebelum mengandalkan strategi. Replay aturan Signal Mode tersedia, tetapi fixture
+yang disertakan sintetis dan belum memvalidasi profitabilitas pada data pasar nyata.

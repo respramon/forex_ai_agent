@@ -1,8 +1,9 @@
 # Audit dan roadmap platform trading AI
 
-Audit kode pada commit `a83ca5d` (`main`, 25 September 2026). Implementasi
-tambahan dalam working tree ini adalah fondasi **paper/research**, bukan sistem
-live dan bukan validasi profitabilitas. Semua 44 tes awal lulus sebelum perubahan.
+Bagian audit baseline berikut merujuk commit `a83ca5d` (25 September 2026).
+Perubahan 26 September menambahkan replay aturan Signal Mode, biaya historis,
+validasi timeframe dan rekonsiliasi tiket baca saja. Ini fondasi **paper/research**,
+bukan sistem live dan bukan validasi profitabilitas.
 
 ## 1. Audit repository target
 
@@ -71,9 +72,11 @@ bus dilakukan jika profil beban nyata membenarkannya.
 | Modul | Kontrak saat ini |
 |---|---|
 | `forex_agent/orderbook.py` | SQLite WAL, `BEGIN IMMEDIATE`, `client_id` unik, `execution_id` unik, PENDING/PARTIAL/FILLED/CANCELLED/CLOSED, reservasi portofolio/mata uang sampai exposure ditutup. Paper saja. |
-| `forex_agent/backtest.py` | Input per simbol lengkap, SMA cross contoh yang dapat diganti melalui `Strategy.on_close`, sizing dan pemeriksaan ulang pada fill, next-open, spread/slippage roundtrip, mark-to-market, drawdown latch, event dan trade log. |
-| `forex_agent/research.py` | Return/volatilitas/posisi close kausal, logistic regression tanpa dependency, scaler dari train saja, train/validation/test menurut waktu dengan purge 1-bar, threshold pada validation, test sekali. |
-| `forex_agent/cli.py` | `backtest`, `train`, `predict`; mode lama masih bekerja. |
+| `forex_agent/backtest.py` | Replay next-open, biaya per candle, financing per unit, mark-to-market, stop-first, batas drawdown, metrik dan hash dataset. `--strategy sma` tetap contoh mesin fill. |
+| `forex_agent/replay.py` | `--strategy agent` memakai `ForexAgent.analyze` yang sama dengan mode sinyal, memotong konteks dan kalender pada waktu historis, merekam jurnal simulasi, serta membatalkan fill di luar area entry. |
+| `forex_agent/reconciliation.py` dan `providers.py` | OANDA `/openTrades` dan ID transaksi akun; cocokkan ID tiket, pair, arah, ukuran, entry, SL, TP, dan batas bawah risiko dengan jurnal sebelum sinyal nyata. |
+| `forex_agent/research.py` | Baseline logistik, split kronologis dengan purge, scaler training saja, validasi interval timeframe, hash dataset, threshold validasi dan test terpisah. |
+| `forex_agent/cli.py` | `backtest`, `train`, `predict`, tautkan tiket jurnal lama; mode lama masih bekerja. |
 
 ### Kontrak dataset replay
 
@@ -81,8 +84,12 @@ Lihat [`examples/backtest.synthetic.json`](../examples/backtest.synthetic.json).
 Root wajib berisi `simulated: true`, `timeframe`, `initial_equity`, `account_currency`,
 `bars` per simbol, `instruments` per simbol, dan `assumptions.spread` per simbol.
 Zona hari risiko bawaan `Asia/Bangkok` dapat diganti dengan `timezone` IANA.
-`assumptions.slippage` adalah allowance **roundtrip**; setengah dikenakan pada
-entry dan exit. Seluruh simbol harus punya timestamp close yang sama, berurutan,
+`assumptions.spread` dan `assumptions.slippage` dapat berupa angka tetap atau
+array sepanjang candle per pair. Slippage adalah allowance **roundtrip**;
+setengah dikenakan pada entry dan exit. `assumptions.financing_per_unit` opsional
+berisi `BUY`/`SELL` dalam mata uang akun per unit per candle; tanpa input biaya
+financing diasumsikan nol dan hasil tidak mencerminkan swap aktual. Seluruh simbol
+harus punya timestamp close yang sama, berurutan,
 pada interval timeframe (kecuali jeda akhir pekan terbatas), tanpa candle belum
 tutup. Harga OHLC adalah midpoint. Untuk quote currency yang
 berbeda dari currency akun, **setiap bar** wajib berisi `quote_to_account` positif
@@ -92,11 +99,19 @@ memakai konversi dari close candle sebelumnya; pada close, memakai nilai candle
 itu. Ini pendekatan konservatif terhadap ketersediaan data, bukan simulasi quote
 konversi pada setiap fill.
 
+Untuk `--strategy agent`, sediakan `context_frames[pair][timeframe]` minimal 250
+candle tutup tiap timeframe konteks dan `fundamentals_history` berupa daftar
+snapshot kalender berurutan `as_of`. Replay hanya memberikan data dengan
+timestamp ≤ waktu keputusan; `actual` dari event yang belum terjadi ditolak.
+Ketiadaan kalender segar menyebabkan NO_TRADE. Data contoh ada di
+[`agent-replay.synthetic.json`](../examples/agent-replay.synthetic.json).
+
 Pada timestamp yang sama, pemrosesan close sebelumnya terjadi sebelum open
-berikutnya. Strategi tetap dipanggil saat ada posisi, tetapi sinyal tambahan
-diabaikan. Jika SL dan TP sama-sama tercapai intrabar, SL diambil. Gap pada
+berikutnya. Strategi SMA kustom tetap dipanggil saat ada posisi, tetapi
+replay agent melewati posisi aktif agar tidak menghabiskan kuota penerbitan
+sinyal. Jika SL dan TP sama-sama tercapai intrabar, SL diambil. Gap pada
 posisi terbuka dieksekusi pada open buruk aktual untuk stop; order entry baru
-dibatalkan jika gap membuat level/anggaran tidak valid. Drawdown mark-to-market
+dibatalkan jika gap membuat level/anggaran atau area entry tidak valid. Drawdown mark-to-market
 melatch larangan order baru; posisi yang sudah terbuka tetap mengikuti stop/TP.
 Bar terakhir tidak dapat mengisi order yang baru diajukan pada bar itu.
 
@@ -104,14 +119,17 @@ Bar terakhir tidak dapat mengisi order yang baru diajukan pada bar itu.
 
 ```bash
 python scripts/generate_backtest_example.py
+python -m scripts.generate_agent_replay_example
 python -m unittest discover -s tests -v
-python -m forex_agent backtest --data examples/backtest.synthetic.json --out data/backtest-result.json
+python -m forex_agent backtest --data examples/agent-replay.synthetic.json --out data/agent-result.json
+python -m forex_agent backtest --data examples/backtest.synthetic.json --strategy sma --out data/sma-result.json
 python -m forex_agent train --data examples/backtest.synthetic.json --pair EUR/USD --timeframe M5 --out data/model.synthetic.json
 python -m forex_agent predict --model data/model.synthetic.json --data examples/backtest.synthetic.json
 ```
 
-Contoh 180 bar sintetis menghasilkan 3 trade tertutup dengan hasil negatif pada
-asumsi yang disimpan. Metrik klasifikasi tinggi pada gelombang sintetis yang
+Contoh SMA 180 bar sintetis menghasilkan 3 trade tertutup dengan hasil negatif;
+contoh agent menghasilkan satu sinyal dan fill yang berhenti di SL buatan.
+Metrik klasifikasi tinggi pada gelombang sintetis yang
 periodik tidak relevan untuk klaim keuntungan forex nyata.
 
 ## 5. Roadmap, prioritas dan migrasi
@@ -119,7 +137,7 @@ periodik tidak relevan untuk klaim keuntungan forex nyata.
 | Fase | Tujuan, file utama | Teknologi dan prioritas | Kompleksitas / gerbang selesai |
 |---|---|---|---|
 | 1 — Fondasi | Pertahankan `models.py`, `risk.py`, `agent.py`; perluas `tests/`, dokumentasi data dan validasi historis. | Python standard library; P0. | Sedang. Invariant waktu/simbol/risiko dan 44 tes lama lulus. |
-| 2 — Paper dan strategi | `orderbook.py`, `backtest.py`, `cli.py`; berikutnya fill model parametrik, data catalog, strategi SMC kausal dan rekonsiliasi jurnal. | SQLite, replay deterministik; P0. | Besar. Trade, event, biaya, gap, dan state restart dibandingkan broker demo. |
+| 2 — Paper dan strategi | `orderbook.py`, `backtest.py`, `replay.py`, `cli.py`; berikutnya data catalog dan validasi terhadap fill broker demo. | SQLite, replay deterministik; P0. | Besar. Bandingkan trade, kalender, biaya, gap, dan state restart dengan broker demo. |
 | 3 — ML/RL | `research.py`; berikutnya dataset versi, walk-forward beberapa rezim, kalibrasi, experiment tracking, lingkungan RL dengan reward setelah biaya. | Baseline Python; NumPy/scikit-learn/Gym opsional setelah kebutuhan terukur; P1. | Besar. Out-of-sample berulang, embargo sesuai horizon, tidak ada leakage, benchmark strategi nol. |
 | 4 — Live | Buat `brokers/`, `execution/`, `monitoring/` setelah interface dan tes kontrak; koneksi MT5/OANDA, WebSocket, circuit breaker, observabilitas. | Adapter broker spesifik, penyimpanan event/tiket, secret management; P2 sampai semua gerbang aman. | Sangat besar. Rekonsiliasi restart, idempotensi broker, timeout/retry, kill switch dan uji akun demo. |
 
@@ -134,8 +152,11 @@ bukan mempercayai payload klien.
 ## 6. Batas hasil saat ini
 
 Backtest hanya memakai OHLC dan urutan stop-first, bukan tick/order book; belum
-memodelkan likuiditas, partial fill simulasi, swap, sesi/holiday, latency, atau
-konversi intra-bar. Kalender berita historis belum terhubung. Ledger paper mampu
+memodelkan likuiditas, partial fill simulasi, sesi/holiday, latency, atau
+konversi intra-bar. Financing yang terjadi di masa depan tidak masuk estimasi
+`initial_risk` saat order diajukan; perubahan ekuitasnya tetap muncul pada replay.
+Financing dan kalender historis perlu disuplai pengguna;
+tidak ada unduhan atau verifikasi sumber historis otomatis. Ledger paper mampu
 mencatat fill parsial, tetapi backtest memberi fill penuh atau membatalkan entry.
 Skor logistik bukan probabilitas terkalibrasi dan belum masuk jalur keputusan
 live. Belum ada RL, live order API, MT4/MT5 adapter, WebSocket, multi-tenant,

@@ -13,6 +13,8 @@ kecil; paket ini belum mencakup hardening layanan publik.
 | POST `/v1/risk` | snapshot, timeframe, proposed_trade | Laporan risiko |
 | POST `/v1/journal/open` | Record trade (lihat examples/journal_trade.json) | trade_id |
 | POST `/v1/journal/close` | trade_id, net_pnl, closed_at | status closed |
+| POST `/v1/journal/link` | trade_id, broker_trade_id (jurnal nyata lama) | status linked |
+| POST `/v1/journal/amend` | trade_id, units, entry, stop, target, initial_risk | status amended |
 | GET `/v1/journal?simulated=true` | Auth; query opsional | Ringkasan jurnal simulasi |
 
 Semua request POST memakai `Content-Type: application/json`. Batas body 4 MiB,
@@ -62,7 +64,9 @@ untuk menjelaskan besaran yang melampaui batas.
 
 ## Persistensi
 
-Default DB `data/journal.sqlite3`. Gunakan satu proses kebijakan konsisten dan satu
+Transaksi nyata baru perlu `broker_trade_id` pada `/v1/journal/open`. Snapshot
+nyata untuk `/v1/analyze` dan `/v1/risk` perlu `broker_open_trades` yang cocok
+dengan jurnal. Default DB `data/journal.sqlite3`. Gunakan satu proses kebijakan konsisten dan satu
 DB per akun. Semua koneksi menggunakan transaksi SQLite. Identitas pengguna/API key
 multi-tenant, sinkronisasi tiket broker otomatis, TLS terminator dan observability
 operasional belum termasuk. Lihat [SECURITY.md](../SECURITY.md) untuk batas deployment.

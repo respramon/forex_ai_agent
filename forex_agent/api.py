@@ -103,6 +103,12 @@ def handler_factory(db_path: str, token: str, policy: RiskPolicy):
                     elif path == "/v1/journal/close":
                         journal.close_trade(payload["trade_id"], payload["net_pnl"], utc(payload["closed_at"]))
                         result = {"status": "closed"}
+                    elif path == "/v1/journal/link":
+                        journal.link_broker_trade(payload["trade_id"], payload["broker_trade_id"])
+                        result = {"status": "linked"}
+                    elif path == "/v1/journal/amend":
+                        journal.amend_open_trade(payload["trade_id"], payload)
+                        result = {"status": "amended"}
                     else:
                         self.send(404, {"error": "Endpoint tidak ditemukan."})
                         return

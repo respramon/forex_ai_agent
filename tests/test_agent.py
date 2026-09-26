@@ -97,6 +97,13 @@ class AgentTests(unittest.TestCase):
         r = self.agent.analyze(self.data, "M15", "signal", clock=utc("2026-09-25T10:00:00Z"))
         self.assert_blocked(r)
 
+    def test_real_signal_requires_broker_tickets_even_if_counts_match(self):
+        self.data["simulated"] = False
+        clock = utc(self.data["as_of"])
+        self.assert_blocked(self.agent.analyze(self.data, "M15", "signal", clock=clock))
+        self.data["broker_open_trades"] = []
+        self.assertEqual(self.agent.analyze(self.data, "M15", "signal", clock=clock)["status"], "BUY")
+
     def test_bearish_signal_symmetric_path(self):
         for frame in self.data["frames"].values():
             for c in frame:

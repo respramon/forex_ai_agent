@@ -52,6 +52,15 @@ class ResearchTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             train(data, pair="EUR/USD", timeframe="M5")
 
+    def test_timeframe_metadata_must_match_candle_cadence(self):
+        data = bars()
+        with self.assertRaisesRegex(ValidationError, "timeframe"):
+            train(data, pair="EUR/USD", timeframe="H1")
+        model = train(data, pair="EUR/USD", timeframe="M5")
+        hourly = data[::12]
+        with self.assertRaisesRegex(ValidationError, "timeframe"):
+            predict(model, hourly)
+
 
 if __name__ == "__main__":
     unittest.main()

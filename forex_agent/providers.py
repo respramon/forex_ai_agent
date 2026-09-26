@@ -82,8 +82,15 @@ class OandaProvider:
         if not matches:
             raise ValidationError("Instrumen tidak tersedia untuk akun/divisi broker ini.")
         s = matches[0]
-        account = self._get(root + "/summary")["account"]
-        account_stamp = now_utc()
+        summary = self._get(root + "/summary")
+        open_trades_response = self._get(root + "/openTrades")
+        if (not summary.get("lastTransactionID") or
+                summary["lastTransactionID"] != open_trades_response.get("lastTransactionID")):
+            raise ValidationError("Status akun berubah saat mengambil tiket; ulangi snapshot.")
+        account = summary["account"]
+        broker_trades = open_trades_response["trades"]
+        if int(account["openTradeCount"]) != len(broker_trades):
+            raise ValidationError("Jumlah trade pada summary dan daftar tiket broker berbeda.")
         frames = {}
         for tf, seconds in SECONDS.items():
             response = self._get(root + f"/instruments/{symbol}/candles", {
@@ -94,7 +101,16 @@ class OandaProvider:
                               (("open", "o"), ("high", "h"), ("low", "l"), ("close", "c"))},
                            "volume": c["volume"], "complete": True}
                           for c in response["candles"] if c["complete"] is True]
-        pricing = self._get(root + "/pricing", {"instruments": symbol, "includeHomeConversions": "true"})
+        symbols = sorted({symbol, *(trade["instrument"] for trade in broker_trades)})
+        pricing = self._get(root + "/pricing", {"instruments": ",".join(symbols),
+                                                "includeHomeConversions": "true"})
+        final_summary = self._get(root + "/summary")
+        if final_summary.get("lastTransactionID") != summary["lastTransactionID"]:
+            raise ValidationError("Status akun berubah saat mengambil harga; ulangi snapshot.")
+        account = final_summary["account"]
+        if int(account["openTradeCount"]) != len(broker_trades):
+            raise ValidationError("Jumlah trade berubah saat mengambil harga; ulangi snapshot.")
+        account_stamp = now_utc()
         quotes = [p for p in pricing["prices"] if p["instrument"] == symbol]
         if not quotes or not quotes[0]["bids"] or not quotes[0]["asks"]:
             raise ValidationError("Quote bid/ask tidak tersedia.")
@@ -106,11 +122,33 @@ class OandaProvider:
             factors = next((c for c in pricing.get("homeConversions", []) if c["currency"] == quote_currency), None)
             if factors is None:
                 raise ValidationError("Broker tidak mengirim faktor konversi yang diperlukan.")
+        conversions = {c["currency"]: c for c in pricing.get("homeConversions", [])}
+        normalized_trades = []
+        for trade in broker_trades:
+            signed_units = number(trade["currentUnits"], "currentUnits")
+            if signed_units == 0 or trade.get("state") != "OPEN":
+                raise ValidationError("Daftar openTrades berisi trade tanpa posisi terbuka.")
+            name = trade["instrument"].replace("_", "/")
+            broker_quote = name.split("/")[-1]
+            factor = (1 if broker_quote == account["currency"] else
+                      conversions.get(broker_quote, {}).get("accountLoss"))
+            stop_order = trade.get("stopLossOrder") or trade.get("guaranteedStopLossOrder") or {}
+            target_order = trade.get("takeProfitOrder") or {}
+            normalized_trades.append({"id": str(trade["id"]), "pair": name,
+                                      "side": "BUY" if signed_units > 0 else "SELL",
+                                      "units": abs(signed_units),
+                                      "entry": number(trade["price"], "entry", positive=True),
+                                      "stop": (number(stop_order["price"], "stop", positive=True)
+                                               if stop_order.get("price") is not None else None),
+                                      "target": (number(target_order["price"], "target", positive=True)
+                                                 if target_order.get("price") is not None else None),
+                                      "loss_factor": (number(factor, "loss_factor", positive=True)
+                                                      if factor is not None else None)})
         commission = s.get("commission", {})
         per_unit = (2 * float(commission["commission"]) / float(commission["unitsTraded"])) if commission else 0
         stamp = now_utc()
         return {"pair": pair, "source": f"OANDA-{self.environment}", "simulated": False,
-                "as_of": iso(stamp), "frames": frames,
+                "as_of": iso(stamp), "frames": frames, "broker_open_trades": normalized_trades,
                 "quote": {"bid": float(quote["bids"][0]["price"]), "ask": float(quote["asks"][0]["price"]),
                           "time": quote["time"], "tradeable": quote["tradeable"]},
                 "instrument": {"pair": pair, "pip_size": 10 ** s["pipLocation"],

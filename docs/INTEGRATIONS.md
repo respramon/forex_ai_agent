@@ -3,7 +3,7 @@
 | Komponen | Status dalam paket | Kegunaan dan konfigurasi |
 |---|---|---|
 | Python standard library | Aktif tanpa kredensial | Indikator, policy, sizing, CLI, HTTP, SQLite |
-| OANDA v20 REST | Adapter baca aktif | Candle, bid/ask, spesifikasi instrumen, account NAV/margin, konversi |
+| OANDA v20 REST | Adapter baca aktif | Candle, bid/ask, spesifikasi instrumen, account NAV/margin, konversi dan daftar tiket terbuka |
 | CSV/JSON | Adapter aktif | Snapshot broker alternatif dan kalender yang dinormalisasi |
 | Alpha Vantage NEWS_SENTIMENT | Adapter aktif | Skor sentimen mata uang per ticker, bobot relevansi |
 | OpenAI Responses | Adapter opsional aktif | Narasi ringkas dari laporan yang sudah divalidasi |
@@ -20,10 +20,15 @@ Endpoint GET yang dipakai:
 
 - `/v3/accounts/{accountID}/instruments?instruments=...`
 - `/v3/accounts/{accountID}/summary`
+- `/v3/accounts/{accountID}/openTrades`
 - `/v3/accounts/{accountID}/instruments/{instrument}/candles`
 - `/v3/accounts/{accountID}/pricing?instruments=...&includeHomeConversions=true`
 
-Metadata broker menentukan pipLocation, displayPrecision, precision units, minimum,
+Summary dan openTrades harus memiliki `lastTransactionID` yang sama; jika status
+akun berubah di antaranya, snapshot ditolak untuk diambil ulang. Tiket mencakup
+ID, units saat ini, entry, attached SL/TP. Posisi tanpa SL/TP atau konversi yang
+dibutuhkan akan diblokir oleh Signal/Risk Mode. Metadata broker menentukan
+pipLocation, displayPrecision, precision units, minimum,
 maksimum, margin, dan komisi jika disediakan. Konvensi units per lot diberikan
 pengguna. Bila pair tidak tersedia atau konversi tidak ada, pengambilan gagal dengan
 pesan eksplisit. Tidak ada pengganti harga berupa angka buatan.
